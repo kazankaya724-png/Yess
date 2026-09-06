@@ -51,9 +51,10 @@ CONFIG = {
     "IDENTITY_PROVIDER": os.getenv("IDENTITY_PROVIDER", "MOCK"),
     "PAYMENT_PROVIDER": os.getenv("PAYMENT_PROVIDER", "STRIPE_CONNECT" if os.getenv("STRIPE_API_KEY") else "MOCK"),
     "PUSH_PROVIDER": os.getenv("PUSH_PROVIDER", "MOCK"),
-    "MAP_PROVIDER": os.getenv("MAP_PROVIDER", "MOCK"),
+    "MAP_PROVIDER": os.getenv("MAP_PROVIDER", "GOOGLE_MAPS" if os.getenv("GOOGLE_MAPS_API_KEY") else "MOCK"),
     "STRIPE_API_KEY": os.getenv("STRIPE_API_KEY", ""),
     "EMERGENT_LLM_KEY": os.getenv("EMERGENT_LLM_KEY", ""),
+    "GOOGLE_MAPS_API_KEY": os.getenv("GOOGLE_MAPS_API_KEY", ""),
     "INTEGRATION_PROXY_URL": (os.environ.get("INTEGRATION_PROXY_URL") or "").strip() or "https://integrations.emergentagent.com",
     "APP_NAME": "spike-marketplace",
 }
@@ -382,24 +383,84 @@ class PushNotificationService:
 
 
 class MapProvider:
-    """MOCKED. Real impl would use Google/Mapbox for geocoding & routing."""
-    @staticmethod
-    async def geocode_zip(zip_code: str) -> Optional[dict]:
-        # Small stub of known zips (deterministic). Real impl calls geocoding API.
-        table = {
-            "92105": {"lat": 32.7440, "lng": -117.0900, "city": "San Diego", "state": "CA"},
-            "92037": {"lat": 32.8322, "lng": -117.2713, "city": "La Jolla", "state": "CA"},
-            "94103": {"lat": 37.7749, "lng": -122.4194, "city": "San Francisco", "state": "CA"},
-            "10001": {"lat": 40.7506, "lng": -73.9971, "city": "New York", "state": "NY"},
-            "60601": {"lat": 41.8858, "lng": -87.6181, "city": "Chicago", "state": "IL"},
-        }
-        if zip_code in table:
-            return table[zip_code]
-        # Pseudo-random deterministic hash → coords in US-ish
+    """Real Google Geocoding API with MongoDB cache. Falls back to a small stub
+    (deterministic hash for unknown ZIPs) when the key is missing or Google errors.
+    """
+    _FALLBACK = {
+        "92105": {"lat": 32.7440, "lng": -117.0900, "city": "San Diego", "state": "CA"},
+        "92037": {"lat": 32.8322, "lng": -117.2713, "city": "La Jolla", "state": "CA"},
+        "94103": {"lat": 37.7749, "lng": -122.4194, "city": "San Francisco", "state": "CA"},
+        "10001": {"lat": 40.7506, "lng": -73.9971, "city": "New York", "state": "NY"},
+        "60601": {"lat": 41.8858, "lng": -87.6181, "city": "Chicago", "state": "IL"},
+    }
+
+    @classmethod
+    async def geocode_zip(cls, zip_code: str) -> Optional[dict]:
+        zip_code = (zip_code or "").strip()[:5]
+        if len(zip_code) != 5 or not zip_code.isdigit():
+            return None
+        # Cache first
+        cached = await db.zip_geocodes.find_one({"zip": zip_code}, {"_id": 0})
+        if cached:
+            return {"lat": cached["lat"], "lng": cached["lng"], "city": cached.get("city") or "", "state": cached.get("state") or ""}
+        # Try Google
+        key = CONFIG["GOOGLE_MAPS_API_KEY"]
+        if key:
+            try:
+                async with httpx.AsyncClient(timeout=8.0) as client_http:
+                    r = await client_http.get(
+                        "https://maps.googleapis.com/maps/api/geocode/json",
+                        params={"components": f"postal_code:{zip_code}|country:US", "key": key},
+                    )
+                payload = r.json() if r.status_code == 200 else {}
+                if payload.get("status") == "OK" and payload.get("results"):
+                    res = payload["results"][0]
+                    loc = res.get("geometry", {}).get("location", {})
+                    lat, lng = loc.get("lat"), loc.get("lng")
+                    comps = res.get("address_components", [])
+                    def find(*types):
+                        for c in comps:
+                            if any(t in c.get("types", []) for t in types):
+                                return c
+                        return None
+                    city_c = find("locality", "postal_town", "sublocality")
+                    state_c = find("administrative_area_level_1")
+                    country_c = find("country")
+                    if country_c and country_c.get("short_name") != "US":
+                        pass  # skip non-US
+                    elif isinstance(lat, (int, float)) and isinstance(lng, (int, float)):
+                        doc = {
+                            "zip": zip_code,
+                            "lat": float(lat),
+                            "lng": float(lng),
+                            "city": (city_c or {}).get("long_name"),
+                            "state": (state_c or {}).get("short_name"),
+                            "formatted": res.get("formatted_address"),
+                            "source": "google",
+                            "updated_at": now_utc(),
+                        }
+                        await db.zip_geocodes.update_one({"zip": zip_code}, {"$set": doc}, upsert=True)
+                        return {"lat": doc["lat"], "lng": doc["lng"], "city": doc["city"] or "", "state": doc["state"] or ""}
+                else:
+                    logger.warning("Google geocode status=%s for %s", payload.get("status"), zip_code)
+            except Exception as e:
+                logger.warning("Google geocode error for %s: %s", zip_code, e)
+        # Fallback
+        if zip_code in cls._FALLBACK:
+            return cls._FALLBACK[zip_code]
         h = int(hashlib.sha256(zip_code.encode()).hexdigest(), 16)
-        lat = 30 + (h % 20000) / 1000.0  # 30-50
-        lng = -120 + ((h // 20000) % 45000) / 1000.0  # -120 to -75
+        lat = 30 + (h % 20000) / 1000.0
+        lng = -120 + ((h // 20000) % 45000) / 1000.0
         return {"lat": round(lat, 4), "lng": round(lng, 4), "city": "Unknown", "state": "US"}
+
+
+@api_router.get("/geocode/{zip_code}")
+async def geocode_endpoint(zip_code: str, user: dict = Depends(get_current_user)):
+    """Public-to-authenticated ZIP → coordinates lookup for client map centering."""
+    result = await MapProvider.geocode_zip(zip_code)
+    if not result:
+        raise HTTPException(422, "invalid zip")
+    return result
 
 
 class ObjectStorage:
@@ -800,7 +861,7 @@ async def get_user(user_id: str, requester: dict = Depends(get_current_user)):
         "cancellation_rate": u.get("cancellation_rate", 0),
         "reliability_score": u.get("reliability_score", 80),
         "categories": u.get("categories", []),
-        "zip_area": (u.get("zip_code") or "")[:3] + "**" if u.get("zip_code") else None,
+        "zip_area": u.get("zip_code"),
     }
     return safe
 
@@ -910,7 +971,7 @@ async def create_job(body: JobCreateIn, user: dict = Depends(require_role("custo
         "end_time": body.end_time,
         "scheduled_start": scheduled_start,
         "zip_code": body.zip_code,
-        "zip_area": body.zip_code[:3] + "**",
+        "zip_area": body.zip_code,  # ZIP is public
         "city": geo.get("city"),
         "state": geo.get("state"),
         "exact_address": body.exact_address,

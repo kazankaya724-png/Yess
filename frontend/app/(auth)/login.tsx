@@ -17,8 +17,8 @@ export default function Login() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { login, loginWithSession } = useAuth();
-  const [email, setEmail] = useState("jane@spike.app");
-  const [password, setPassword] = useState("Demo@123");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [captchaToken, setCaptchaToken] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -128,13 +128,6 @@ export default function Login() {
         <Pressable testID="go-to-register" onPress={() => router.push("/(auth)/register")}>
           <Text style={styles.linkText}>New to SPIKE? <Text style={{ color: colors.brandPrimary, fontWeight: "700" }}>Create an account</Text></Text>
         </Pressable>
-
-        <View style={styles.demoBox}>
-          <Text style={styles.demoTitle}>Demo accounts</Text>
-          <Text style={styles.demoText}>Customer: jane@spike.app / Demo@123</Text>
-          <Text style={styles.demoText}>Handyman: mike@spike.app / Demo@123</Text>
-          <Text style={styles.demoText}>Admin: admin@spike.app / Admin@123</Text>
-        </View>
       </ScrollView>
     </KeyboardAvoidingView>
   );
@@ -153,7 +146,4 @@ const styles = StyleSheet.create({
   },
   error: { color: colors.error, marginBottom: 12, fontSize: 14 },
   linkText: { textAlign: "center", color: colors.onSurfaceSecondary, fontSize: 14 },
-  demoBox: { marginTop: 32, padding: 14, backgroundColor: colors.surfaceSecondary, borderRadius: 12 },
-  demoTitle: { fontWeight: "700", color: colors.onSurface, marginBottom: 6 },
-  demoText: { color: colors.onSurfaceSecondary, fontSize: 12, marginBottom: 2 },
 });
