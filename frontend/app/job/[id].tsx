@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { View, Text, StyleSheet, ScrollView, Pressable, TextInput, KeyboardAvoidingView, Platform, ActivityIndicator, RefreshControl, Image } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
@@ -11,6 +11,7 @@ import { api } from "@/src/api";
 import { useAuth } from "@/src/auth";
 import { pickAndUpload } from "@/src/upload";
 import { VerifiedBadge } from "@/src/verified-badge";
+import { RatingPrompt } from "@/src/rating-prompt";
 
 const STATE_LABELS: Record<string, { title: string; sub: string; icon: string; tone: "brand" | "success" | "warning" }> = {
   POSTED: { title: "Awaiting a pro", sub: "We're matching nearby verified handymen.", icon: "magnify", tone: "brand" },
@@ -52,6 +53,25 @@ export default function JobDetail() {
     enabled: !!id && tab === "chat" && (chatStatusQ.data?.allowed ?? false),
     refetchInterval: tab === "chat" ? 4000 : false,
   });
+  const reviewsQ = useQuery({
+    queryKey: ["job-reviews", id],
+    queryFn: () => api<{ reviews: any[]; can_rate: boolean }>(`/jobs/${id}/reviews`),
+    enabled: !!id,
+  });
+  const etaQ = useQuery({
+    queryKey: ["job-eta", id],
+    queryFn: () => api<{ available: boolean; distance_miles?: number; minutes?: number; urgency?: string }>(`/jobs/${id}/eta`),
+    enabled: !!id,
+    refetchInterval: 30_000,
+  });
+  const [rateOpen, setRateOpen] = useState(false);
+  const [rateShown, setRateShown] = useState(false);
+  useEffect(() => {
+    if (!rateShown && reviewsQ.data?.can_rate) {
+      setRateShown(true);
+      setRateOpen(true);
+    }
+  }, [reviewsQ.data?.can_rate, rateShown]);
 
   const job = jobQ.data?.job;
   const isCustomer = user?.role === "customer" && user?.user_id === job?.customer_id;
@@ -151,6 +171,18 @@ export default function JobDetail() {
             </View>
           </View>
 
+          {job.status === "HANDYMAN_ON_WAY" && etaQ.data?.available && (
+            <View style={styles.etaCard} testID="eta-card">
+              <View style={[styles.etaIconWrap, { backgroundColor: job.urgency === "emergency" ? colors.error : colors.brandPrimary }]}>
+                <Icon name="car" size={20} color={colors.onBrandPrimary} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.etaTitle}>Arriving in ~{etaQ.data.minutes} min</Text>
+                <Text style={styles.etaSub}>{etaQ.data.distance_miles} mi away · updates live</Text>
+              </View>
+            </View>
+          )}
+
           <View style={styles.card}>
             <Row k="Price" v={`$${Number(job.price).toFixed(0)}`} />
             <Row k="Category" v={job.category} />
@@ -178,6 +210,43 @@ export default function JobDetail() {
           )}
 
           {err && <Text style={{ color: colors.error, marginTop: 12 }}>{err}</Text>}
+
+          {(reviewsQ.data?.reviews || []).length > 0 && (
+            <>
+              <Text style={styles.section}>Ratings</Text>
+              <View style={{ gap: 10 }}>
+                {(reviewsQ.data?.reviews || []).map((r: any) => (
+                  <View key={r.review_id} style={styles.reviewCard}>
+                    <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
+                      <Text style={styles.reviewName}>{r.reviewer_name} → {r.reviewer_role === "customer" ? "Handyman" : "Customer"}</Text>
+                      <View style={{ flexDirection: "row", alignItems: "center", gap: 2 }}>
+                        <Icon name="star" size={14} color={colors.warning} />
+                        <Text style={styles.reviewRating}>{Number(r.rating).toFixed(1)}</Text>
+                      </View>
+                    </View>
+                    {!!r.comment && <Text style={styles.reviewComment}>&ldquo;{r.comment}&rdquo;</Text>}
+                    {(r.photos || []).length > 0 && (
+                      <View style={{ flexDirection: "row", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
+                        {(r.photos || []).map((p: string, i: number) => (
+                          <Image
+                            key={i}
+                            source={{ uri: p.startsWith("http") ? p : `${process.env.EXPO_PUBLIC_BACKEND_URL}/api/files/${p}` }}
+                            style={styles.reviewPhoto}
+                          />
+                        ))}
+                      </View>
+                    )}
+                  </View>
+                ))}
+              </View>
+            </>
+          )}
+
+          {reviewsQ.data?.can_rate && (
+            <View style={{ marginTop: 16 }}>
+              <Button testID="open-rating" label={`Rate this ${user?.role === "customer" ? "handyman" : "customer"}`} onPress={() => setRateOpen(true)} />
+            </View>
+          )}
 
           <View style={{ marginTop: 20, gap: 10 }}>
             {canClaim && <Button testID="claim-btn" label="Claim this job" loading={busy} onPress={() => doAction("/claim")} />}
@@ -247,6 +316,14 @@ export default function JobDetail() {
           )}
         </View>
       )}
+      <RatingPrompt
+        visible={rateOpen}
+        jobId={String(id)}
+        jobTitle={job?.title || ""}
+        reviewerRole={(user?.role as any) || "customer"}
+        onClose={() => setRateOpen(false)}
+        onSubmitted={() => { qc.invalidateQueries({ queryKey: ["job-reviews", id] }); }}
+      />
     </KeyboardAvoidingView>
   );
 }
@@ -319,4 +396,13 @@ const styles = StyleSheet.create({
   photoLabelText: { color: "#FFF", fontSize: 10, fontWeight: "800", letterSpacing: 0.5 },
   photoUploadRow: { flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: colors.surfaceSecondary, padding: 12, borderRadius: 12 },
   photoBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: colors.brandPrimary, alignItems: "center", justifyContent: "center" },
+  etaCard: { flexDirection: "row", alignItems: "center", padding: 14, borderRadius: 16, gap: 12, backgroundColor: colors.brandTertiary, marginTop: 10 },
+  etaIconWrap: { width: 40, height: 40, borderRadius: 20, alignItems: "center", justifyContent: "center" },
+  etaTitle: { fontWeight: "800", color: colors.onBrandTertiary, fontSize: 16 },
+  etaSub: { color: colors.onBrandTertiary, opacity: 0.75, fontSize: 12, marginTop: 2 },
+  reviewCard: { padding: 12, backgroundColor: colors.surfaceSecondary, borderRadius: 12 },
+  reviewName: { fontWeight: "700", color: colors.onSurface, fontSize: 13, flex: 1, marginRight: 8 },
+  reviewRating: { fontWeight: "800", color: colors.onSurface, fontSize: 13 },
+  reviewComment: { color: colors.onSurfaceSecondary, fontStyle: "italic", marginTop: 6, fontSize: 13 },
+  reviewPhoto: { width: 72, height: 72, borderRadius: 8, backgroundColor: colors.surfaceTertiary },
 });

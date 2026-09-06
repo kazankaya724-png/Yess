@@ -13,7 +13,7 @@ import { pickAndUpload } from "@/src/upload";
 export default function PostJob() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const params = useLocalSearchParams<{ category?: string }>();
+  const params = useLocalSearchParams<{ category?: string; urgency?: string }>();
   const cfg = useQuery({ queryKey: ["config"], queryFn: () => api<{ categories: any[] }>("/config") });
 
   const [step, setStep] = useState(1);
@@ -26,18 +26,28 @@ export default function PostJob() {
   const [endTime, setEndTime] = useState("17:00");
   const [zip, setZip] = useState("");
   const [address, setAddress] = useState("");
-  const [urgency, setUrgency] = useState<"standard" | "emergency">("standard");
+  const [urgency, setUrgency] = useState<"standard" | "emergency">(
+    (params.urgency as any) === "emergency" ? "emergency" : "standard"
+  );
   const [instructions, setInstructions] = useState("");
   const [photos, setPhotos] = useState<string[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Default date = tomorrow (yyyy-mm-dd)
   React.useEffect(() => {
     const d = new Date();
-    d.setDate(d.getDate() + 2);
-    setDate(d.toISOString().slice(0, 10));
-  }, []);
+    if (urgency === "emergency") {
+      // today
+      setDate(d.toISOString().slice(0, 10));
+      // Next hour rounded up
+      const h = Math.min(23, d.getHours() + 1);
+      setStartTime(`${String(h).padStart(2, "0")}:00`);
+      setEndTime(`${String(Math.min(23, h + 3)).padStart(2, "0")}:00`);
+    } else {
+      d.setDate(d.getDate() + 2);
+      setDate(d.toISOString().slice(0, 10));
+    }
+  }, [urgency]);
 
   const submit = async () => {
     setError(null);

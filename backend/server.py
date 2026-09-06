@@ -540,6 +540,7 @@ class ReviewIn(BaseModel):
     rating: float  # 1-5
     categories: Dict[str, float] = {}
     comment: Optional[str] = None
+    photos: List[str] = []  # storage paths
 
 
 class ArrivalIn(BaseModel):
@@ -1452,10 +1453,13 @@ async def create_review(job_id: str, body: ReviewIn, user: dict = Depends(get_cu
         "review_id": new_id("r_"),
         "job_id": job_id,
         "reviewer_id": user["user_id"],
+        "reviewer_role": user.get("role"),
+        "reviewer_name": user.get("legal_name") or (user.get("email", "").split("@")[0] if user.get("email") else "User"),
         "target_id": target,
         "rating": float(body.rating),
         "categories": body.categories,
         "comment": body.comment,
+        "photos": body.photos,
         "created_at": now_utc(),
     }
     await db.reviews.insert_one(r.copy())
@@ -1476,6 +1480,48 @@ async def create_review(job_id: str, body: ReviewIn, user: dict = Depends(get_cu
 async def get_user_reviews(user_id: str, requester: dict = Depends(get_current_user)):
     cur = db.reviews.find({"target_id": user_id}, {"_id": 0}).sort("created_at", -1).limit(50)
     return {"reviews": [clean_doc(r) async for r in cur]}
+
+
+@api_router.get("/jobs/{job_id}/reviews")
+async def get_job_reviews(job_id: str, user: dict = Depends(get_current_user)):
+    """Returns both reviews for a job plus who still needs to rate."""
+    j = await db.jobs.find_one({"job_id": job_id})
+    if not j:
+        raise HTTPException(404, "not found")
+    if user.get("role") != "admin" and user["user_id"] not in {j.get("customer_id"), j.get("handyman_id")}:
+        raise HTTPException(403, "forbidden")
+    cur = db.reviews.find({"job_id": job_id}, {"_id": 0})
+    reviews = [clean_doc(r) async for r in cur]
+    reviewer_ids = {r["reviewer_id"] for r in reviews}
+    can_rate = j["status"] in {"CUSTOMER_APPROVED", "PAYMENT_RELEASED"} and user["user_id"] not in reviewer_ids and user["user_id"] in {j.get("customer_id"), j.get("handyman_id")}
+    return {"reviews": reviews, "can_rate": can_rate}
+
+
+@api_router.get("/jobs/{job_id}/eta")
+async def job_eta(job_id: str, user: dict = Depends(get_current_user)):
+    """Estimated arrival for the assigned handyman. Uses stored handyman location vs job location."""
+    j = await db.jobs.find_one({"job_id": job_id})
+    if not j:
+        raise HTTPException(404, "not found")
+    if user["user_id"] not in {j.get("customer_id"), j.get("handyman_id")}:
+        raise HTTPException(403, "forbidden")
+    if not j.get("handyman_id") or not j.get("exact_location"):
+        return {"available": False}
+    hm = await db.users.find_one({"user_id": j["handyman_id"]}, {"_id": 0, "location": 1})
+    if not hm or not hm.get("location"):
+        return {"available": False}
+    [hlng, hlat] = hm["location"]["coordinates"]
+    [jlng, jlat] = j["exact_location"]["coordinates"]
+    dist = haversine_miles(hlat, hlng, jlat, jlng)
+    # Emergency: assume 45 mph, standard 25 mph
+    mph = 45 if j.get("urgency") == "emergency" else 25
+    minutes = max(1, int(round(dist / mph * 60)))
+    return {
+        "available": True,
+        "distance_miles": round(dist, 1),
+        "minutes": minutes,
+        "urgency": j.get("urgency", "standard"),
+    }
 
 
 # ------------------------------------------------------------------

@@ -1,9 +1,10 @@
 import React from "react";
-import { View, Text, StyleSheet, ScrollView, Pressable, FlatList, RefreshControl } from "react-native";
+import { View, Text, StyleSheet, ScrollView, Pressable, RefreshControl } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { LinearGradient } from "expo-linear-gradient";
+import Icon from "@react-native-vector-icons/material-design-icons";
 
 import { colors } from "@/src/theme";
 import { Button, Badge } from "@/src/ui";
@@ -49,6 +50,21 @@ export default function CustomerHome() {
             <Text style={styles.heroSub}>Post a job. Get matched with verified pros nearby.</Text>
             <View style={styles.heroCta}><Text style={styles.heroCtaText}>Post a Job →</Text></View>
           </LinearGradient>
+        </Pressable>
+
+        <Pressable
+          testID="emergency-tile"
+          onPress={() => router.push({ pathname: "/(customer)/post-job", params: { urgency: "emergency" } })}
+          style={styles.emergencyTile}
+        >
+          <View style={styles.emergencyIconWrap}>
+            <Icon name="lightning-bolt" size={26} color="#FFFFFF" />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.emergencyTitle}>Need it now</Text>
+            <Text style={styles.emergencySub}>Fast-track a verified pro. Address unlocks instantly, live ETA on the way.</Text>
+          </View>
+          <Icon name="chevron-right" size={22} color="#FFFFFF" />
         </Pressable>
 
         <Text style={styles.sectionTitle}>Popular categories</Text>
@@ -106,11 +122,21 @@ const styles = StyleSheet.create({
   greeting: { color: colors.muted, fontSize: 14 },
   name: { color: colors.onSurface, fontSize: 24, fontWeight: "700" },
   iconBtn: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, backgroundColor: colors.surfaceSecondary },
-  hero: { marginHorizontal: 20, borderRadius: 20, padding: 20, marginBottom: 24 },
+  hero: { marginHorizontal: 20, borderRadius: 20, padding: 20, marginBottom: 12 },
   heroTitle: { color: colors.onBrand, fontSize: 22, fontWeight: "700" },
   heroSub: { color: colors.onBrand, opacity: 0.8, marginTop: 6, fontSize: 14 },
   heroCta: { marginTop: 16, backgroundColor: colors.surface, alignSelf: "flex-start", paddingHorizontal: 16, paddingVertical: 10, borderRadius: 999 },
   heroCtaText: { color: colors.brandPrimary, fontWeight: "700" },
+  emergencyTile: {
+    marginHorizontal: 20, marginBottom: 20, borderRadius: 20, padding: 16,
+    backgroundColor: colors.error, flexDirection: "row", alignItems: "center", gap: 12,
+  },
+  emergencyIconWrap: {
+    width: 48, height: 48, borderRadius: 24, backgroundColor: "rgba(255,255,255,0.18)",
+    alignItems: "center", justifyContent: "center",
+  },
+  emergencyTitle: { color: "#FFFFFF", fontWeight: "800", fontSize: 17 },
+  emergencySub: { color: "#FFFFFF", opacity: 0.9, fontSize: 12, marginTop: 3 },
   sectionTitle: { fontSize: 18, fontWeight: "700", color: colors.onSurface, paddingHorizontal: 20, marginBottom: 12 },
   catChip: { backgroundColor: colors.surfaceSecondary, paddingHorizontal: 14, paddingVertical: 12, borderRadius: 12, flexDirection: "row", alignItems: "center", gap: 8, flexShrink: 0 },
   catChipText: { color: colors.onSurface, fontWeight: "600" },
