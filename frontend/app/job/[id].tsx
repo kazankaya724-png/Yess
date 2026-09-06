@@ -12,6 +12,7 @@ import { useAuth } from "@/src/auth";
 import { pickAndUpload } from "@/src/upload";
 import { VerifiedBadge } from "@/src/verified-badge";
 import { RatingPrompt } from "@/src/rating-prompt";
+import { PrivacyAreaCard } from "@/src/privacy-area-card";
 
 const STATE_LABELS: Record<string, { title: string; sub: string; icon: string; tone: "brand" | "success" | "warning" }> = {
   POSTED: { title: "Awaiting a pro", sub: "We're matching nearby verified handymen.", icon: "magnify", tone: "brand" },
@@ -194,6 +195,18 @@ export default function JobDetail() {
               <Row k="Address" v="🔒 Unlocks 24h before start" />
             )}
           </View>
+
+          {!job.exact_address && (
+            <>
+              <Text style={styles.section}>Approximate service area</Text>
+              <PrivacyAreaCard
+                city={job.city}
+                state={job.state}
+                zip={job.zip_area || job.zip_code}
+                radiusMeters={job.privacy_radius_meters || 500}
+              />
+            </>
+          )}
 
           <Text style={styles.section}>Description</Text>
           <Text style={styles.desc}>{job.description || "—"}</Text>

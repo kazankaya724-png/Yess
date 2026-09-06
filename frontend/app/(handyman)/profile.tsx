@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { View, Text, StyleSheet, ScrollView, Pressable } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useRouter } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import * as WebBrowser from "expo-web-browser";
 import Icon from "@react-native-vector-icons/material-design-icons";
@@ -13,6 +14,7 @@ import { VerifiedBadge } from "@/src/verified-badge";
 
 export default function HandymanProfile() {
   const insets = useSafeAreaInsets();
+  const router = useRouter();
   const { user, logout, refresh } = useAuth();
   const [busy, setBusy] = useState(false);
   const stripeStatus = useQuery({ queryKey: ["stripe-status"], queryFn: () => api<any>("/stripe/status") });
@@ -107,6 +109,17 @@ export default function HandymanProfile() {
       </View>
 
       <View style={{ marginTop: 20 }}>
+        <Pressable testID="open-support" onPress={() => router.push("/support")} style={styles.supportBtn}>
+          <Icon name="lifebuoy" size={20} color={colors.brandPrimary} />
+          <View style={{ flex: 1 }}>
+            <Text style={{ color: colors.onSurface, fontWeight: "700" }}>Get help</Text>
+            <Text style={{ color: colors.muted, fontSize: 12, marginTop: 2 }}>Chat live with SPIKE Support.</Text>
+          </View>
+          <Icon name="chevron-right" size={20} color={colors.muted} />
+        </Pressable>
+      </View>
+
+      <View style={{ marginTop: 20 }}>
         <Button testID="signout-btn" label="Sign out" variant="danger" onPress={logout} />
       </View>
     </ScrollView>
@@ -135,4 +148,5 @@ const styles = StyleSheet.create({
   grid: { flexDirection: "row", gap: 10 },
   stat: { flex: 1, backgroundColor: colors.surfaceSecondary, borderRadius: 14, padding: 14, alignItems: "flex-start" },
   stripeCard: { backgroundColor: colors.surfaceSecondary, borderRadius: 16, padding: 14 },
+  supportBtn: { flexDirection: "row", alignItems: "center", gap: 12, padding: 14, borderRadius: 12, backgroundColor: colors.surfaceSecondary, borderWidth: 1, borderColor: colors.border },
 });

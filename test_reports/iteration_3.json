@@ -1,0 +1,49 @@
+{
+  "summary": "Iteration 3 testing complete. BACKEND (pytest, 20 new + 17 iter-1 regressions = 37 total pass, 0 fail): the /jobs?scope=mine bug is FIXED — before claim mike's list is empty of an emergency job created by jane, after mike POST /jobs/{id}/claim the same job appears in mike's scope=mine with status CLAIMED. Customer scope=mine still returns own jobs (regression clean). PRIVACY: a fresh POST /jobs returns privacy_radius_meters=500 and approx_location whose great-circle distance to exact_location is >0 and ≤700m (hash-based deterministic jitter of ~440m N/S in the code). Non-owner unrelated handyman (sarah) is 403'd from /jobs/{id} for a job outside her area / not claimed by her, matching iter-2 protection; when reachable, exact_address is stripped. Owner still sees exact_address. SUPPORT: POST /api/support/messages by customer returns message doc; GET returns only that user's thread. GET /api/admin/support returns conversations with user_id/last_body/count. GET /api/admin/support/{uid} returns full thread. POST /api/admin/support/{uid}/reply inserts sender_role='admin' and user sees both messages. Non-admin (customer + handyman) is 403 on /api/admin/support. ADMIN USER MGMT: POST /api/admin/users creates a new admin who can log in and access /api/admin/support. POST /api/admin/users/{uid}/promote flips role to admin and the promoted customer can now access admin endpoints. Non-admin is 403 on both. SEED CLEANUP: mike/sarah/alex all have rating_avg=0, rating_count=0, completed_jobs=0. /api/admin/jobs contains no auto-seeded 'sample/seed/demo' jobs (only TEST_-prefixed created by tests). Demo logins (jane/mike/admin) all 200. Commission fields still stripped from /payments/mine for customer. FRONTEND (390x844): Mike hold-captcha login lands on radar /available. Before claiming, My Jobs list does not contain the newly created 'UI TEST Mount TV'. After claiming via API (equivalent to radar tap), My Jobs shows 'UI TEST Mount TV' card with 'CLAIMED' badge and $180 price (BUG FIX visually verified). Tapping the card opens /job/{id} which renders PrivacyAreaCard SVG (data-testid='privacy-area-card') with 'Approximate area · ~500m radius · San Diego, CA' footer and NO exact street text in the visible body. Handyman profile → 'Get help' row (testID open-support) navigates to /support; empty state renders, sending 'Hi need help with payout' shows the bubble on user side. Admin login → /admin with three tab pills (Stats / Users / Support). Users tab shows '+ Add admin' pressable and existing seed users mike/sarah/alex/jane with rating/completion badges absent (VERIFIED chip only). Add admin modal collects email/name/password and successfully creates a new admin (visible in list on close). Support tab lists conversations (Mike Rivera '1' unread, Jane Doe '10' unread) with correct last_body preview.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/admin/users vs POST /api/auth/login", "issue": "admin_create_user lowercases the incoming email before storing (line 1914) but /auth/login looks up by exact-case email (line 764). If admin enters an email with any uppercase chars (very common — e.g. 'Ops@spike.app'), the created account cannot log in ('Invalid credentials'). Fix: either lowercase email at login lookup, or store email as-provided in create. Repro: create admin with email='X@Y.com' → login with same string → 401."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "job/[id].tsx", "issue": "Detail header shows 'ADDRESS RELEASED' pill for an emergency claimed job, but the Address row below still says '🔒 Unlocks 24h before start' — inconsistent messaging. Should show the actual address (or 'Released — waiting for booking') once emergency + claimed. Reference: /app/frontend/app/job/[id].tsx (Address row) with badge computed from address_released.", "testID": "n/a", "priority": "MEDIUM"}
+    ],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "global", "issue": "Console warning: '\"shadow*\" style props are deprecated. Use \"boxShadow\".' Still widespread (fires on nearly every screen navigation). Reference: many StyleSheet.create calls across /app/frontend/app/ and /app/frontend/src/ using shadowColor/shadowOpacity/shadowRadius. Migrate to RN 0.76+ boxShadow."},
+      {"component": "global", "issue": "Console warning: 'props.pointerEvents is deprecated. Use style.pointerEvents' fires on login, profile, and admin screens. Grep for pointerEvents prop and move it into style."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration3.py",
+    "/app/backend/tests/test_iteration2.py",
+    "/app/backend/tests/test_spike_backend.py",
+    "/app/test_reports/pytest/pytest_iter3.xml"
+  ],
+  "action_items": [
+    "Fix email case-sensitivity mismatch in login (/app/backend/server.py:764): change to `db.users.find_one({\"email\": body.email.strip().lower()})` OR remove lowercase() in admin_create_user (line 1914) — pick one canonical form and apply consistently across register/login/admin_create.",
+    "Job detail Address row: when address_released=true (emergency + claimed for the booked handyman, or T-24h reached for others), show the real address instead of the '🔒 Unlocks 24h before start' placeholder — /app/frontend/app/job/[id].tsx.",
+    "Migrate deprecated 'shadow*' style props to 'boxShadow' (RN 0.76+). Widespread deprecation warning across the app.",
+    "Move deprecated 'pointerEvents' prop into style.pointerEvents (login, profile, admin screens at minimum)."
+  ],
+  "critical_code_review_comments": [
+    "server.py is 1952 lines — modular split still deferred (auth, jobs, chat, payments, stripe, uploads, admin, support). Should be broken up in iteration 4.",
+    "Privacy jitter is deterministic (md5(exact_address) → shift) which is good for stability across requests but means the approx location is reproducible if the exact address is known. Acceptable for a 500m halo.",
+    "admin_create_user endpoint accepts arbitrary role including 'customer'/'handyman' — matches spec, but consider requiring a stronger confirmation step or audit log for admin creations.",
+    "admin_promote silently succeeds even if user_id does not exist (no matched_count check). Consider returning 404 when nothing was updated.",
+    "GET /api/admin/support pipeline uses $group without projection — user_email lookup is per-conversation N+1. Fine at demo scale, worth a $lookup for production."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration3.py (new — 20 iter-3 test cases across MyJobsBugFix, PrivacyArea, Support, AdminUserMgmt, SeedCleanup, DemoLogins, CommissionHidden)",
+    "/app/backend/tests/test_spike_backend.py (updated stale zip_area='**' assertion — ZIP is now public per iter-3 privacy model)"
+  ],
+  "success_rate": {"backend": "100% (37/37 across iter-1..iter-3)", "frontend": "100% of exercised flows (bug-fix My Jobs, PrivacyAreaCard on job detail, handyman Support send, admin Stats/Users/Support tabs, Add admin modal, admin Support conversation list)"},
+  "seed_data_creation": "Iteration-3 tests create TEST_-prefixed jobs, one UI-test job 'UI TEST Mount TV' (emergency), several support messages ('TEST_help_*', 'TEST_conv_*', 'TEST_thread_*', 'TEST_reply_*') and TEST_ admin/customer accounts via /api/admin/users and /api/auth/register. All TEST_-prefixed and safely identifiable.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Bug fixed: GET /jobs?scope=mine now returns handyman_id-matched jobs (server.py:1037-1040). Privacy: /jobs POST writes approx_location + privacy_radius_meters=500 + exact_location; _mask_address strips exact_address for non-owner non-booked-handyman. Support endpoints under /api/support (user) and /api/admin/support (admin, admin-role gated). Admin user mgmt: POST /api/admin/users (create), POST /api/admin/users/{uid}/promote (role flip). KNOWN BACKEND MINOR: login is case-sensitive on email but admin_create_user lowercases — if new tests use mixed-case emails they will fail login. Frontend testIDs: 'tab-stats'/'tab-users'/'tab-support', 'create-admin', 'new-admin-email'/'new-admin-name'/'new-admin-password'/'new-admin-submit', 'convo-{user_id}', 'admin-convo-back', 'admin-reply-input'/'admin-reply-send', 'open-support', 'support-input'/'support-send', 'privacy-area-card', 'myjob-{job_id}'. Google Maps geocode falls back to a local stub (billing not enabled) — do NOT flag.",
+  "rca_of_issue": "Original bug root cause (fixed in iter-3): the previous list_jobs used a single condition like `if role==\"customer\" or scope==\"mine\": query = {\"customer_id\": user_id}` which meant a handyman calling scope=mine got filtered against customer_id (they own no jobs as customer) and always returned []. Fix: role-branched handler — handyman with scope=mine queries handyman_id=user_id. Verified by test_handyman_scope_mine_returns_claimed_jobs and via UI (My Jobs card appears after claim). New minor RCA to track: /admin/users lowercases email at write time (line 1914) but /auth/login does not lowercase at read time (line 764). Any admin-created account with an uppercase char in email cannot subsequently log in. Deterministic repro included in the report."
+}

@@ -666,13 +666,13 @@ async def startup():
                 "identity_verified_at": now_utc(),
                 "license_verified": "plumbing" in cats or "electrical" in cats,
                 "insurance_verified": True,
-                "rating_avg": 4.8,
-                "rating_count": 12 + hash(email) % 30,
-                "completed_jobs": 25 + hash(email) % 40,
-                "completion_rate": 98,
-                "on_time_rate": 96,
-                "cancellation_rate": 2,
-                "reliability_score": 95,
+                "rating_avg": 0,
+                "rating_count": 0,
+                "completed_jobs": 0,
+                "completion_rate": 100,
+                "on_time_rate": 100,
+                "cancellation_rate": 0,
+                "reliability_score": 80,
                 "created_at": now_utc(),
                 "suspended": False,
             })
@@ -724,11 +724,12 @@ async def get_config():
 async def register(body: RegisterIn):
     if not body.accept_terms:
         raise HTTPException(400, "Must accept terms")
-    if await db.users.find_one({"email": body.email}):
+    email_norm = body.email.lower().strip()
+    if await db.users.find_one({"email": email_norm}):
         raise HTTPException(400, "Email already registered")
     doc = {
         "user_id": new_id("u_"),
-        "email": body.email,
+        "email": email_norm,
         "phone": body.phone,
         "role": body.role,
         "password_hash": hash_pw(body.password),
@@ -761,7 +762,8 @@ async def login(body: LoginIn):
     # Simple anti-bot: require captcha_token to be present and non-empty (client generates)
     if not body.captcha_token or len(body.captcha_token) < 6:
         raise HTTPException(400, "Human verification required")
-    u = await db.users.find_one({"email": body.email})
+    email_norm = body.email.lower().strip()
+    u = await db.users.find_one({"email": email_norm})
     if not u or not check_pw(body.password, u.get("password_hash", "")):
         raise HTTPException(401, "Invalid credentials")
     if u.get("suspended"):
@@ -949,9 +951,11 @@ async def create_job(body: JobCreateIn, user: dict = Depends(require_role("custo
         scheduled_start = datetime.fromisoformat(f"{body.date}T{body.start_time}:00+00:00")
     except Exception:
         raise HTTPException(400, "invalid date/time")
-    # Approx location = shifted by ~0.5 mile random for privacy
-    lat_shift = (int(hashlib.md5(body.exact_address.encode()).hexdigest()[:4], 16) % 100 - 50) / 5000.0
-    lng_shift = (int(hashlib.md5(body.exact_address.encode()).hexdigest()[4:8], 16) % 100 - 50) / 5000.0
+    # Approx location: jittered center for privacy. Client draws a ~500m circle around it.
+    # Real address stays server-side until address_release_at.
+    jitter = 0.004  # ~440m N/S, ~370m E/W in most US latitudes
+    lat_shift = ((int(hashlib.md5(body.exact_address.encode()).hexdigest()[:4], 16) % 200) - 100) / 200.0 * jitter
+    lng_shift = ((int(hashlib.md5(body.exact_address.encode()).hexdigest()[4:8], 16) % 200) - 100) / 200.0 * jitter
     approx = {"type": "Point", "coordinates": [geo["lng"] + lng_shift, geo["lat"] + lat_shift]}
     exact_loc = {"type": "Point", "coordinates": [geo["lng"], geo["lat"]]}
     address_release_at = scheduled_start - timedelta(hours=CONFIG["ADDRESS_RELEASE_HOURS"])
@@ -976,6 +980,7 @@ async def create_job(body: JobCreateIn, user: dict = Depends(require_role("custo
         "state": geo.get("state"),
         "exact_address": body.exact_address,
         "approx_location": approx,
+        "privacy_radius_meters": 500,
         "exact_location": exact_loc,
         "special_instructions": body.special_instructions,
         "required_skills": body.required_skills,
@@ -1025,17 +1030,21 @@ async def _notify_nearby(job: dict):
 @api_router.get("/jobs")
 async def list_jobs(user: dict = Depends(get_current_user), scope: str = "mine"):
     role = user.get("role")
-    if role == "customer" or scope == "mine":
+    if role == "customer":
         cur = db.jobs.find({"customer_id": user["user_id"]}, {"_id": 0}).sort("created_at", -1)
         jobs = [_mask_address(j, role, user["user_id"]) async for j in cur]
         return {"jobs": jobs}
     if role == "handyman":
-        # Available: POSTED/MATCHING with matching category and within radius
+        # scope=mine → this handyman's claimed/booked jobs
+        if scope == "mine":
+            cur = db.jobs.find({"handyman_id": user["user_id"]}, {"_id": 0}).sort("created_at", -1)
+            jobs = [_mask_address(j, role, user["user_id"]) async for j in cur]
+            return {"jobs": jobs}
+        # scope=available or other → delegate to available endpoint semantics
         u = await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0})
         if not u.get("location"):
             return {"jobs": []}
         coords = u["location"]["coordinates"]
-        # Get user's categories
         cats = u.get("categories", [])
         query = {
             "status": {"$in": ["POSTED", "MATCHING_30MI", "MATCHING_60MI"]},
@@ -1053,14 +1062,9 @@ async def list_jobs(user: dict = Depends(get_current_user), scope: str = "mine")
         jobs = []
         async for j in cur:
             masked = _mask_address(j, role, user["user_id"])
-            # Add distance
             [lng, lat] = j["approx_location"]["coordinates"]
             masked["distance_miles"] = round(haversine_miles(coords[1], coords[0], lat, lng), 1)
             jobs.append(masked)
-        # Also list handyman's own claimed/booked jobs when scope="mine"
-        if scope == "mine":
-            cur2 = db.jobs.find({"handyman_id": user["user_id"]}, {"_id": 0}).sort("created_at", -1)
-            jobs = [_mask_address(j, role, user["user_id"]) async for j in cur2]
         return {"jobs": jobs}
     return {"jobs": []}
 
@@ -1814,6 +1818,121 @@ async def stripe_status(user: dict = Depends(require_role("handyman"))):
         "details_submitted": bool(u.get("stripe_details_submitted")),
         "mocked": CONFIG["PAYMENT_PROVIDER"] != "STRIPE_CONNECT",
     }
+
+
+# ------------------------------------------------------------------
+# Support (live help chat between user and admin)
+# ------------------------------------------------------------------
+class SupportMsgIn(BaseModel):
+    body: str
+
+
+@api_router.post("/support/messages")
+async def support_send(body: SupportMsgIn, user: dict = Depends(get_current_user)):
+    doc = {
+        "message_id": new_id("sm_"),
+        "user_id": user["user_id"],
+        "sender_id": user["user_id"],
+        "sender_role": user.get("role", "user"),
+        "body": body.body,
+        "created_at": now_utc(),
+    }
+    await db.support_messages.insert_one(doc.copy())
+    # Notify all admins
+    async for a in db.users.find({"role": "admin"}, {"_id": 0, "user_id": 1}):
+        await PushNotificationService.send(a["user_id"], "SUPPORT_MESSAGE",
+                                           f"Support: {user.get('email', 'user')}",
+                                           body.body[:60], {"user_id": user["user_id"]})
+    return {"message": clean_doc(doc)}
+
+
+@api_router.get("/support/messages")
+async def support_list(user: dict = Depends(get_current_user)):
+    cur = db.support_messages.find({"user_id": user["user_id"]}, {"_id": 0}).sort("created_at", 1)
+    return {"messages": [clean_doc(m) async for m in cur]}
+
+
+@api_router.get("/admin/support")
+async def admin_support(user: dict = Depends(require_role("admin"))):
+    pipeline = [
+        {"$sort": {"created_at": -1}},
+        {"$group": {"_id": "$user_id", "last_body": {"$first": "$body"},
+                    "last_at": {"$first": "$created_at"}, "count": {"$sum": 1}}},
+        {"$sort": {"last_at": -1}},
+        {"$limit": 100},
+    ]
+    convos = []
+    async for c in db.support_messages.aggregate(pipeline):
+        u = await db.users.find_one({"user_id": c["_id"]}, {"_id": 0, "email": 1, "legal_name": 1, "role": 1})
+        convos.append({
+            "user_id": c["_id"],
+            "user_email": (u or {}).get("email"),
+            "user_name": (u or {}).get("legal_name") or (u or {}).get("email"),
+            "user_role": (u or {}).get("role"),
+            "last_body": c["last_body"],
+            "last_at": ensure_aware(c["last_at"]).isoformat() if c["last_at"] else None,
+            "count": c["count"],
+        })
+    return {"conversations": convos}
+
+
+@api_router.get("/admin/support/{user_id}")
+async def admin_support_msgs(user_id: str, user: dict = Depends(require_role("admin"))):
+    cur = db.support_messages.find({"user_id": user_id}, {"_id": 0}).sort("created_at", 1)
+    return {"messages": [clean_doc(m) async for m in cur]}
+
+
+@api_router.post("/admin/support/{user_id}/reply")
+async def admin_support_reply(user_id: str, body: SupportMsgIn, user: dict = Depends(require_role("admin"))):
+    doc = {
+        "message_id": new_id("sm_"),
+        "user_id": user_id,
+        "sender_id": user["user_id"],
+        "sender_role": "admin",
+        "body": body.body,
+        "created_at": now_utc(),
+    }
+    await db.support_messages.insert_one(doc.copy())
+    await PushNotificationService.send(user_id, "SUPPORT_REPLY", "SPIKE Support",
+                                       body.body[:60])
+    return {"message": clean_doc(doc)}
+
+
+# ------------------------------------------------------------------
+# Admin: promote users to admin (or demote), create admin
+# ------------------------------------------------------------------
+@api_router.post("/admin/users/{user_id}/promote")
+async def admin_promote(user_id: str, body: Dict[str, Any], user: dict = Depends(require_role("admin"))):
+    role = body.get("role")
+    if role not in {"customer", "handyman", "admin"}:
+        raise HTTPException(400, "role must be customer|handyman|admin")
+    await db.users.update_one({"user_id": user_id}, {"$set": {"role": role}})
+    return {"ok": True, "role": role}
+
+
+@api_router.post("/admin/users")
+async def admin_create_user(body: Dict[str, Any], user: dict = Depends(require_role("admin"))):
+    """Admin creates another user (typically another admin)."""
+    email = (body.get("email") or "").strip().lower()
+    password = body.get("password") or ""
+    role = body.get("role") or "admin"
+    if not email or not password or role not in {"customer", "handyman", "admin"}:
+        raise HTTPException(400, "email, password, role required")
+    if await db.users.find_one({"email": email}):
+        raise HTTPException(400, "email exists")
+    doc = {
+        "user_id": new_id("u_"),
+        "email": email,
+        "phone": body.get("phone", ""),
+        "role": role,
+        "password_hash": hash_pw(password),
+        "legal_name": body.get("legal_name"),
+        "identity_status": "VERIFIED" if role == "admin" else "PENDING",
+        "created_at": now_utc(),
+        "suspended": False,
+    }
+    await db.users.insert_one(doc.copy())
+    return {"ok": True, "user_id": doc["user_id"]}
 
 
 # ------------------------------------------------------------------
