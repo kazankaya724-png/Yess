@@ -1,0 +1,171 @@
+{
+  "app_name": "SPIKE",
+  "personality": "1 iOS-Native Clean",
+  "personality_one_liner": "A highly readable, trust-first interface where the local community's needs and verified experts sit front and center, feeling as reliable as a handshake.",
+  "color": {
+    "surface": "#FFFFFF",
+    "onSurface": "#1C201E",
+    "surfaceSecondary": "#F4F5F4",
+    "onSurfaceSecondary": "#2A312D",
+    "surfaceTertiary": "#EAECEA",
+    "onSurfaceTertiary": "#2A312D",
+    "surfaceInverse": "#1C201E",
+    "onSurfaceInverse": "#FFFFFF",
+    "brand": "#2A4D3B",
+    "onBrand": "#FFFFFF",
+    "brandPrimary": "#2A4D3B",
+    "onBrandPrimary": "#FFFFFF",
+    "brandSecondary": "#4A6D5B",
+    "onBrandSecondary": "#FFFFFF",
+    "brandTertiary": "#E3E8E5",
+    "onBrandTertiary": "#2A4D3B",
+    "success": "#356645",
+    "onSuccess": "#FFFFFF",
+    "warning": "#D48D3B",
+    "onWarning": "#FFFFFF",
+    "error": "#B34040",
+    "onError": "#FFFFFF",
+    "info": "#665540",
+    "onInfo": "#FFFFFF",
+    "border": "#EAECEA",
+    "borderStrong": "#C8CDC9",
+    "divider": "#EAECEA",
+    "muted": "#7A827D"
+  },
+  "typography": {
+    "displayFontFamily": "Geist",
+    "textFontFamily": "Geist",
+    "scale": {
+      "sm": 12,
+      "base": 14,
+      "lg": 16,
+      "xl": 20,
+      "2xl": 24
+    }
+  },
+  "spacing": {
+    "rule": "Generous padding around content, comfortable vertical flow. Never cramp cards. One column layout for cards.",
+    "xs": 4,
+    "sm": 8,
+    "md": 12,
+    "lg": 16,
+    "xl": 24,
+    "2xl": 32,
+    "3xl": 48
+  },
+  "radius_tokens": {
+    "sm": 6,
+    "md": 12,
+    "lg": 20,
+    "pill": 999
+  },
+  "shadow_tier": "1",
+  "navigation": "bottom_tabs",
+  "icon_set": "Phosphor",
+  "glassmorphism": {
+    "enabled": "true",
+    "do's": [
+      "Bottom tab bar",
+      "Sticky header over scrolling feed",
+      "Featured category card backdrops"
+    ],
+    "dont's": [
+      "Body content",
+      "Form inputs",
+      "Dense lists"
+    ]
+  },
+  "platform_libraries": {
+    "glass": {
+      "ios": "expo-glass-effect",
+      "android": "expo-blur",
+      "low_end_android_fallback": "solid surfaceSecondary"
+    },
+    "image": "expo-image",
+    "blur": "expo-blur",
+    "bottom_sheet": "@gorhom/bottom-sheet",
+    "animation": "react-native-reanimated",
+    "gesture": "react-native-gesture-handler"
+  },
+  "screens": [
+    {
+      "name": "Customer_Home",
+      "purpose": "A hub for service discovery and active job tracking, offering immediate categorization and status updates.",
+      "states": {
+        "loading": "Skeleton grids for categories and loading spinner for active jobs.",
+        "empty": "Illustration of a clean home/clipboard, text 'No active jobs right now. Got something to fix?', CTA 'Post a Job'.",
+        "error": "Text 'Could not load your feed.', CTA 'Retry'"
+      },
+      "layout": "Sticky header with greeting. Top section: Smart Search bar. Middle section: Category Grids (rounded tiles). Bottom section: 'Active Jobs' dashboard tracking status of pending/active tasks. A prominent Floating Action Button (FAB) or sticky bottom button for 'Post a Job'."
+    },
+    {
+      "name": "Handyman_Available_Jobs",
+      "purpose": "Allows handymen to browse and claim local jobs within their radius.",
+      "states": {
+        "loading": "Map loading overlay and list skeletons.",
+        "empty": "Illustration of a map/clipboard, text 'No jobs within your radius at the moment.', CTA 'Expand Radius'.",
+        "error": "Text 'Unable to load local jobs.', CTA 'Retry'"
+      },
+      "layout": "Top toggle (Map / List). List view features cards showing price, distance, zip, and urgency badge. Sticky filter row. Map view features custom markers with job prices."
+    },
+    {
+      "name": "Post_A_Job_Flow",
+      "purpose": "A streamlined multi-step form to collect job details, photos, and address without overwhelming the customer.",
+      "states": {
+        "loading": "Submitting job overlay with spinner.",
+        "empty": "N/A - interactive form",
+        "error": "Inline validation errors below inputs in error color."
+      },
+      "layout": "Progress indicator at the top ('Step 1 of 3'). 5-9 fields per step. Vertical stacked fields. 'Next' / 'Previous' buttons. Step 1: Details (Title, Category). Step 2: Location & Schedule (Address masked). Step 3: Photos & Urgency. Step 4: Review."
+    },
+    {
+      "name": "Job_Details_Timeline",
+      "purpose": "Tracks the end-to-end lifecycle of a job, ensuring trust via verification badges, masked chat, and before/after evidence.",
+      "states": {
+        "loading": "Skeleton timeline and card details.",
+        "empty": "N/A",
+        "error": "Text 'Unable to load job details.', CTA 'Retry'"
+      },
+      "layout": "Hero image (Before photo if uploaded, or category placeholder) with a gradient scrim. Below: Job Title, Price, Handyman Profile row with Trust Verification Badges (ID, License). Main body: Vertical activity timeline (Posted -> Matching -> Claimed -> In Progress). Sticky bottom action: 'Message' or 'Mark Complete'."
+    }
+  ],
+  "images": {
+    "plumbing_category_hero": {
+      "url": "https://images.unsplash.com/photo-1542013936693-884638332954?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1ODR8MHwxfHNlYXJjaHwxfHxwbHVtYmVyJTIwd29ya2luZyUyMG9uJTIwc2lua3xlbnwwfHx8fDE3ODg2NzY3MDJ8MA&ixlib=rb-4.1.0&q=85",
+      "alt": "Plumber working on sink"
+    },
+    "handyman_profile_placeholder": {
+      "url": "https://images.unsplash.com/photo-1461938337379-4b537cd2db74?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDk1ODF8MHwxfHNlYXJjaHwxfHxzbWlsaW5nJTIwaGFuZHltYW4lMjBwb3J0cmFpdHxlbnwwfHx8fDE3ODg2NzY3MDJ8MA&ixlib=rb-4.1.0&q=85",
+      "alt": "Smiling handyman"
+    },
+    "painting_category_hero": {
+      "url": "https://images.unsplash.com/photo-1688372199140-cade7ae820fe?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDQ2MzR8MHwxfHNlYXJjaHwxfHxwYWludGluZyUyMHJvb218ZW58MHx8fHwxNzg4Njc2NzAyfDA&ixlib=rb-4.1.0&q=85",
+      "alt": "Man painting a wall"
+    },
+    "empty_state_clipboard": {
+      "url": "https://images.pexels.com/photos/8489923/pexels-photo-8489923.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "alt": "Clipboard with blank paper on desk"
+    },
+    "abstract_stone_bg": {
+      "url": "https://images.unsplash.com/photo-1600095355173-b970ea5ceb46?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1MDZ8MHwxfHNlYXJjaHwyfHxhYnN0cmFjdCUyMHN0b25lJTIwdGV4dHVyZXxlbnwwfHx8fDE3ODg2NzY3MTl8MA&ixlib=rb-4.1.0&q=85",
+      "alt": "Abstract stone texture"
+    }
+  },
+  "haptics": {
+    "post_job_submit": "success",
+    "claim_job": "success",
+    "tab_switch": "light",
+    "timeline_step_update": "medium"
+  },
+  "instructions_to_main_agent": [
+    "Build the UI focusing heavily on iOS-Native Clean (Personality 1). Avoid all blues strictly. Use the provided Deep Moss/Forest Green brand palette.",
+    "Implement the Job Posting flow as a multi-step component (fieldset/conditional rendering approach) to reduce cognitive load on customers. Make sure 'Next'/'Back' retain state.",
+    "For the Job Timeline, build a visual vertical stepper. Include prominent 'ID VERIFIED' / 'LICENSE VERIFIED' badges near the Handyman's avatar.",
+    "Do NOT use pure blue or any purple-leaning colors anywhere in the app, even for links or info badges.",
+    "Use Phosphor icons. Keep the weight consistent across the app.",
+    "For cards containing text over images (e.g., job categories), you MUST apply the gradient scrim layer (Layer 1: expo-linear-gradient vertical 0% transparent to 100% ≥70% surfaceInverse) to ensure text contrast.",
+    "Apply Glassmorphism to the bottom tab bar and sticky headers.",
+    "All interactive pressables must respect a 44x44pt hit area minimum.",
+    "Ensure the 'Post a Job' button stays sticky over scrolling content to encourage conversion."
+  ]
+}
