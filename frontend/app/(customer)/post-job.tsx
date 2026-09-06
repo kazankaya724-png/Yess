@@ -1,12 +1,14 @@
 import React, { useState } from "react";
-import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, KeyboardAvoidingView, Platform, Alert } from "react-native";
+import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, KeyboardAvoidingView, Platform, Image } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
+import Icon from "@react-native-vector-icons/material-design-icons";
 
 import { colors } from "@/src/theme";
-import { Button, Badge } from "@/src/ui";
+import { Button } from "@/src/ui";
 import { api } from "@/src/api";
+import { pickAndUpload } from "@/src/upload";
 
 export default function PostJob() {
   const insets = useSafeAreaInsets();
@@ -26,6 +28,7 @@ export default function PostJob() {
   const [address, setAddress] = useState("");
   const [urgency, setUrgency] = useState<"standard" | "emergency">("standard");
   const [instructions, setInstructions] = useState("");
+  const [photos, setPhotos] = useState<string[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -48,7 +51,7 @@ export default function PostJob() {
           date, start_time: startTime, end_time: endTime,
           zip_code: zip, exact_address: address,
           special_instructions: instructions, required_skills: [], urgency,
-          photos: [],
+          photos,
         }),
       });
       router.replace({ pathname: "/job/[id]", params: { id: r.job.job_id } });
@@ -108,6 +111,34 @@ export default function PostJob() {
 
         {step === 3 && (
           <>
+            <Text style={styles.label}>Photos (optional)</Text>
+            <View style={styles.photoRow}>
+              {photos.map((p, i) => (
+                <View key={i} style={styles.photoTile}>
+                  <Image source={{ uri: p.startsWith("http") ? p : `${process.env.EXPO_PUBLIC_BACKEND_URL}/api/files/${p}` }} style={{ width: "100%", height: "100%" }} />
+                  <Pressable onPress={() => setPhotos(photos.filter((_, ix) => ix !== i))} style={styles.photoRemove}>
+                    <Icon name="close" size={14} color="#FFF" />
+                  </Pressable>
+                </View>
+              ))}
+              <Pressable
+                testID="pj-add-photo-camera"
+                onPress={async () => { const p = await pickAndUpload("camera"); if (p) setPhotos([...photos, p]); }}
+                style={styles.photoAdd}
+              >
+                <Icon name="camera-plus-outline" size={24} color={colors.brandPrimary} />
+                <Text style={styles.photoAddLabel}>Camera</Text>
+              </Pressable>
+              <Pressable
+                testID="pj-add-photo-library"
+                onPress={async () => { const p = await pickAndUpload("library"); if (p) setPhotos([...photos, p]); }}
+                style={styles.photoAdd}
+              >
+                <Icon name="image-plus" size={24} color={colors.brandPrimary} />
+                <Text style={styles.photoAddLabel}>Gallery</Text>
+              </Pressable>
+            </View>
+
             <Field label="Special instructions (optional)" value={instructions} onChange={setInstructions} testID="pj-instr" multiline />
             <Text style={styles.reviewTitle}>Review</Text>
             <View style={styles.reviewCard}>
@@ -117,9 +148,7 @@ export default function PostJob() {
               <Row k="When" v={`${date}  ${startTime}–${endTime}`} />
               <Row k="ZIP" v={zip} />
               <Row k="Urgency" v={urgency} />
-            </View>
-            <View style={{ marginTop: 12 }}>
-              <Badge label="10% platform commission applies" tone="muted" />
+              <Row k="Photos" v={String(photos.length)} />
             </View>
           </>
         )}
@@ -191,4 +220,9 @@ const styles = StyleSheet.create({
   reviewTitle: { fontSize: 16, fontWeight: "700", marginTop: 8, marginBottom: 8, color: colors.onSurface },
   reviewCard: { backgroundColor: colors.surfaceSecondary, borderRadius: 12, padding: 14 },
   error: { color: colors.error, marginTop: 12 },
+  photoRow: { flexDirection: "row", flexWrap: "wrap", gap: 10, marginBottom: 14 },
+  photoTile: { width: 84, height: 84, borderRadius: 12, overflow: "hidden", backgroundColor: colors.surfaceTertiary },
+  photoRemove: { position: "absolute", right: 4, top: 4, width: 22, height: 22, borderRadius: 11, backgroundColor: "rgba(0,0,0,0.6)", alignItems: "center", justifyContent: "center" },
+  photoAdd: { width: 84, height: 84, borderRadius: 12, backgroundColor: colors.surfaceSecondary, borderWidth: 1, borderColor: colors.border, alignItems: "center", justifyContent: "center", borderStyle: "dashed" },
+  photoAddLabel: { fontSize: 11, color: colors.brandPrimary, fontWeight: "700", marginTop: 4 },
 });

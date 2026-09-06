@@ -9,6 +9,7 @@ import * as Linking from "expo-linking";
 import { colors } from "@/src/theme";
 import { Button } from "@/src/ui";
 import { useAuth } from "@/src/auth";
+import { HoldToVerify } from "@/src/hold-to-verify";
 
 WebBrowser.maybeCompleteAuthSession();
 
@@ -18,24 +19,16 @@ export default function Login() {
   const { login, loginWithSession } = useAuth();
   const [email, setEmail] = useState("jane@spike.app");
   const [password, setPassword] = useState("Demo@123");
-  const [captcha, setCaptcha] = useState("");
-  const [captchaTarget] = useState(() => {
-    const a = Math.floor(Math.random() * 8) + 2;
-    const b = Math.floor(Math.random() * 8) + 2;
-    return { a, b };
-  });
+  const [captchaToken, setCaptchaToken] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  // Handle Google auth callback (cold + hot)
   const processedSessions = React.useRef<Set<string>>(new Set());
-
   const extractSid = (url: string | null): string | null => {
     if (!url) return null;
     const m = url.match(/[?#&]session_id=([^&#]+)/);
     return m ? decodeURIComponent(m[1]) : null;
   };
-
   const processSession = async (sid: string) => {
     if (processedSessions.current.has(sid)) return;
     processedSessions.current.add(sid);
@@ -44,9 +37,7 @@ export default function Login() {
       await loginWithSession(sid, "customer");
     } catch (e: any) {
       setError(e.message || "Sign-in failed");
-    } finally {
-      setLoading(false);
-    }
+    } finally { setLoading(false); }
   };
 
   useEffect(() => {
@@ -54,7 +45,6 @@ export default function Login() {
       const url = typeof window !== "undefined" ? window.location.href : "";
       const sid = extractSid(url);
       if (sid) {
-        // clean URL
         try {
           const { pathname, search } = window.location;
           const cleanSearch = search.replace(/[?&]session_id=[^&]+/, "");
@@ -64,10 +54,7 @@ export default function Login() {
       }
       return;
     }
-    // Mobile: listen for deep links & check initial
-    let capturedUrl: string | null = null;
     const sub = Linking.addEventListener("url", ({ url }) => {
-      capturedUrl = url;
       const sid = extractSid(url);
       if (sid) processSession(sid);
     });
@@ -82,43 +69,24 @@ export default function Login() {
   const onGoogle = async () => {
     setError(null);
     try {
-      const redirectUrl =
-        Platform.OS === "web"
-          ? window.location.origin + "/"
-          : Linking.createURL("");
+      const redirectUrl = Platform.OS === "web" ? window.location.origin + "/" : Linking.createURL("");
       const authUrl = `https://auth.emergentagent.com/?redirect=${encodeURIComponent(redirectUrl)}`;
-      if (Platform.OS === "web") {
-        window.location.href = authUrl;
-        return;
-      }
+      if (Platform.OS === "web") { window.location.href = authUrl; return; }
       const result = await WebBrowser.openAuthSessionAsync(authUrl, redirectUrl);
       let sid = extractSid((result as any).url || null);
-      if (!sid) {
-        const initial = await Linking.getInitialURL();
-        sid = extractSid(initial);
-      }
+      if (!sid) { const initial = await Linking.getInitialURL(); sid = extractSid(initial); }
       if (sid) await processSession(sid);
-    } catch (e: any) {
-      setError(e.message || "Google sign-in failed");
-    }
+    } catch (e: any) { setError(e.message || "Google sign-in failed"); }
   };
 
   const onSubmit = async () => {
     setError(null);
-    const expected = String(captchaTarget.a + captchaTarget.b);
-    if (captcha.trim() !== expected) {
-      setError("Human check failed");
-      return;
-    }
+    if (!captchaToken) return setError("Complete the human check first");
     try {
       setLoading(true);
-      // captcha_token is the answer prefixed with 'v_' — backend just checks length ≥ 6
-      await login(email.trim(), password, `v_${expected}_${Date.now()}`);
-    } catch (e: any) {
-      setError(e.message || "Login failed");
-    } finally {
-      setLoading(false);
-    }
+      await login(email.trim(), password, captchaToken);
+    } catch (e: any) { setError(e.message || "Login failed"); }
+    finally { setLoading(false); }
   };
 
   return (
@@ -133,45 +101,27 @@ export default function Login() {
 
         <View style={styles.field}>
           <Text style={styles.label}>Email</Text>
-          <TextInput
-            testID="login-email"
-            value={email}
-            onChangeText={setEmail}
-            autoCapitalize="none"
-            keyboardType="email-address"
-            placeholder="you@example.com"
-            placeholderTextColor={colors.muted}
-            style={styles.input}
-          />
+          <TextInput testID="login-email" value={email} onChangeText={setEmail} autoCapitalize="none" keyboardType="email-address"
+            placeholder="you@example.com" placeholderTextColor={colors.muted} style={styles.input} />
         </View>
         <View style={styles.field}>
           <Text style={styles.label}>Password</Text>
-          <TextInput
-            testID="login-password"
-            value={password}
-            onChangeText={setPassword}
-            secureTextEntry
-            placeholder="********"
-            placeholderTextColor={colors.muted}
-            style={styles.input}
-          />
+          <TextInput testID="login-password" value={password} onChangeText={setPassword} secureTextEntry
+            placeholder="********" placeholderTextColor={colors.muted} style={styles.input} />
         </View>
-        <View style={styles.field}>
-          <Text style={styles.label}>Are you human? {captchaTarget.a} + {captchaTarget.b} = ?</Text>
-          <TextInput
-            testID="login-captcha"
-            value={captcha}
-            onChangeText={setCaptcha}
-            keyboardType="number-pad"
-            placeholder="Answer"
-            placeholderTextColor={colors.muted}
-            style={styles.input}
+
+        <View style={{ marginBottom: 14 }}>
+          <HoldToVerify
+            testID="login-verify"
+            verified={!!captchaToken}
+            onVerified={(t) => setCaptchaToken(t)}
+            onReset={() => setCaptchaToken(null)}
           />
         </View>
 
         {error && <Text testID="login-error" style={styles.error}>{error}</Text>}
 
-        <Button testID="login-submit" label="Sign in" onPress={onSubmit} loading={loading} />
+        <Button testID="login-submit" label="Sign in" onPress={onSubmit} loading={loading} disabled={!captchaToken} />
         <View style={{ height: 12 }} />
         <Button testID="login-google" label="Continue with Google" onPress={onGoogle} variant="secondary" />
         <View style={{ height: 24 }} />
@@ -198,14 +148,8 @@ const styles = StyleSheet.create({
   field: { marginBottom: 14 },
   label: { fontSize: 13, fontWeight: "600", color: colors.onSurfaceSecondary, marginBottom: 6 },
   input: {
-    backgroundColor: colors.surfaceSecondary,
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 14,
-    fontSize: 16,
-    color: colors.onSurface,
-    borderWidth: 1,
-    borderColor: colors.border,
+    backgroundColor: colors.surfaceSecondary, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 14,
+    fontSize: 16, color: colors.onSurface, borderWidth: 1, borderColor: colors.border,
   },
   error: { color: colors.error, marginBottom: 12, fontSize: 14 },
   linkText: { textAlign: "center", color: colors.onSurfaceSecondary, fontSize: 14 },

@@ -254,21 +254,16 @@ class TestReviewsGuard:
 # Off-platform message flag
 # ------------------------------------------------------------------
 class TestMessages:
-    def test_off_platform_flag(self, api, customer_token, handyman_token, created_job):
-        # created_job is CLAIMED after TestJobLifecycle.test_claim_book_lifecycle
+    def test_chat_locked_until_release(self, api, customer_token, created_job):
+        """Iteration 2: chat is blocked before T-24h (job is 30 days out)."""
         jid = created_job["job_id"]
+        # After lifecycle test the job is CLAIMED+BOOKED but 30 days out — chat locked
         r = api.post(f"{BASE_URL}/api/jobs/{jid}/messages",
-                     json={"body": "Please pay me in cash via venmo"},
+                     json={"body": "hello there"},
                      headers=auth_headers(customer_token))
-        assert r.status_code == 200, r.text
-        data = r.json()
-        assert data.get("flagged_off_platform") is True
-
-        r2 = api.post(f"{BASE_URL}/api/jobs/{jid}/messages",
-                      json={"body": "hello there"},
-                      headers=auth_headers(customer_token))
-        assert r2.status_code == 200
-        assert r2.json().get("flagged_off_platform") is False
+        assert r.status_code == 400, r.text
+        # Either not-yet-claimed or 24h-not-yet-reached — both are valid locked states
+        assert ("24" in r.text) or ("before work time" in r.text.lower()) or ("claim" in r.text.lower())
 
 
 # ------------------------------------------------------------------

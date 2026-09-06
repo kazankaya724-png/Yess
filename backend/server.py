@@ -24,6 +24,12 @@ from datetime import datetime, timezone, timedelta
 import bcrypt
 import jwt
 import httpx
+import requests as pyrequests
+from fastapi.concurrency import run_in_threadpool
+try:
+    import stripe as stripe_sdk
+except Exception:
+    stripe_sdk = None
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -43,9 +49,13 @@ CONFIG = {
     "JWT_ALG": "HS256",
     "JWT_TTL_DAYS": 7,
     "IDENTITY_PROVIDER": os.getenv("IDENTITY_PROVIDER", "MOCK"),
-    "PAYMENT_PROVIDER": os.getenv("PAYMENT_PROVIDER", "MOCK"),
+    "PAYMENT_PROVIDER": os.getenv("PAYMENT_PROVIDER", "STRIPE_CONNECT" if os.getenv("STRIPE_API_KEY") else "MOCK"),
     "PUSH_PROVIDER": os.getenv("PUSH_PROVIDER", "MOCK"),
     "MAP_PROVIDER": os.getenv("MAP_PROVIDER", "MOCK"),
+    "STRIPE_API_KEY": os.getenv("STRIPE_API_KEY", ""),
+    "EMERGENT_LLM_KEY": os.getenv("EMERGENT_LLM_KEY", ""),
+    "INTEGRATION_PROXY_URL": (os.environ.get("INTEGRATION_PROXY_URL") or "").strip() or "https://integrations.emergentagent.com",
+    "APP_NAME": "spike-marketplace",
 }
 
 # Service categories with risk tiers
@@ -216,35 +226,123 @@ class IdentityVerificationService:
 
 
 class PaymentService:
-    """Marketplace payment abstraction. MOCKED — no real charges.
-    Real implementation would use Stripe Connect or similar with escrow.
+    """Marketplace payment abstraction. Uses Stripe Connect (destination charges +
+    application_fee_amount = 10%) when STRIPE_API_KEY is set, otherwise MOCK.
     """
     @staticmethod
+    def _stripe():
+        if stripe_sdk and CONFIG["STRIPE_API_KEY"]:
+            stripe_sdk.api_key = CONFIG["STRIPE_API_KEY"]
+            return stripe_sdk
+        return None
+
+    @staticmethod
+    async def onboard_link(handyman_id: str, return_url: str) -> dict:
+        """Create/reuse a Stripe Express connected account and return an onboarding URL."""
+        s = PaymentService._stripe()
+        if not s:
+            # MOCK: fake onboarding complete instantly
+            await db.users.update_one({"user_id": handyman_id}, {"$set": {
+                "stripe_account_id": f"acct_mock_{secrets.token_hex(4)}",
+                "stripe_charges_enabled": True, "stripe_payouts_enabled": True, "stripe_details_submitted": True,
+            }})
+            return {"url": return_url, "mocked": True}
+        u = await db.users.find_one({"user_id": handyman_id})
+        account_id = (u or {}).get("stripe_account_id")
+        if not account_id:
+            try:
+                account = await run_in_threadpool(lambda: s.Account.create(
+                    type="express", country="US",
+                    capabilities={"card_payments": {"requested": True}, "transfers": {"requested": True}},
+                    metadata={"handyman_id": handyman_id},
+                ))
+                account_id = account.id
+            except Exception as e:
+                logger.warning("Stripe account.create failed, falling back to mock: %s", e)
+                await db.users.update_one({"user_id": handyman_id}, {"$set": {
+                    "stripe_account_id": f"acct_mock_{secrets.token_hex(4)}",
+                    "stripe_charges_enabled": True, "stripe_payouts_enabled": True, "stripe_details_submitted": True,
+                }})
+                return {"url": return_url, "mocked": True}
+            await db.users.update_one({"user_id": handyman_id}, {"$set": {"stripe_account_id": account_id}})
+        try:
+            link = await run_in_threadpool(lambda: s.AccountLink.create(
+                account=account_id, type="account_onboarding",
+                refresh_url=return_url, return_url=return_url,
+            ))
+            return {"url": link.url, "account_id": account_id}
+        except Exception as e:
+            logger.warning("Stripe AccountLink.create failed: %s", e)
+            return {"url": return_url, "mocked": True}
+
+    @staticmethod
     async def authorize(job_id: str, customer_id: str, amount: float) -> dict:
+        s = PaymentService._stripe()
+        job = await db.jobs.find_one({"job_id": job_id})
+        handyman_id = job.get("handyman_id") if job else None
+        hm = await db.users.find_one({"user_id": handyman_id}) if handyman_id else None
+        commission_cents = int(round(amount * CONFIG["PLATFORM_COMMISSION_PERCENT"]))  # amount is dollars, cents = dollars*100; but commission cents = dollars*10 = dollars*100*0.10
+        amount_cents = int(round(amount * 100))
+        commission_cents = int(round(amount_cents * CONFIG["PLATFORM_COMMISSION_PERCENT"] / 100.0))
         pay = {
             "payment_id": new_id("pay_"),
             "job_id": job_id,
             "customer_id": customer_id,
+            "handyman_id": handyman_id,
             "amount": amount,
+            "amount_cents": amount_cents,
+            "commission_cents_planned": commission_cents,
             "status": "AUTHORIZED",
             "provider": CONFIG["PAYMENT_PROVIDER"],
-            "provider_ref": f"mock_auth_{secrets.token_hex(6)}",
+            "provider_ref": None,
             "created_at": now_utc(),
-            "mocked": True,
         }
+        if s and hm and hm.get("stripe_account_id") and hm.get("stripe_charges_enabled"):
+            try:
+                intent = await run_in_threadpool(lambda: s.PaymentIntent.create(
+                    amount=amount_cents, currency="usd",
+                    capture_method="manual",
+                    automatic_payment_methods={"enabled": True, "allow_redirects": "never"},
+                    application_fee_amount=commission_cents,
+                    transfer_data={"destination": hm["stripe_account_id"]},
+                    metadata={"job_id": job_id, "customer_id": customer_id},
+                    idempotency_key=f"job-authorize-{job_id}",
+                ))
+                pay["provider_ref"] = intent.id
+                pay["client_secret"] = intent.client_secret
+                pay["stripe_status"] = intent.status
+            except Exception as e:
+                logger.warning("Stripe PaymentIntent.create failed, using mock: %s", e)
+                pay["provider"] = "MOCK"
+                pay["mocked"] = True
+        else:
+            pay["mocked"] = True
+            pay["provider_ref"] = f"mock_auth_{secrets.token_hex(6)}"
         await db.payments.insert_one(pay.copy())
         return pay
 
     @staticmethod
     async def capture_and_release(payment_id: str, handyman_id: str) -> dict:
-        pay = await db.payments.find_one({"payment_id": payment_id}, {"_id": 0})
+        pay = await db.payments.find_one({"payment_id": payment_id})
         if not pay:
             raise HTTPException(404, "payment not found")
         commission = round(pay["amount"] * CONFIG["PLATFORM_COMMISSION_PERCENT"] / 100.0, 2)
         payout = round(pay["amount"] - commission, 2)
+        s = PaymentService._stripe()
+        stripe_status = None
+        if s and pay.get("provider_ref") and not pay.get("mocked"):
+            try:
+                captured = await run_in_threadpool(lambda: s.PaymentIntent.capture(
+                    pay["provider_ref"], idempotency_key=f"job-capture-{pay['job_id']}",
+                ))
+                stripe_status = captured.status
+            except Exception as e:
+                logger.warning("Stripe capture failed: %s", e)
         await db.payments.update_one(
             {"payment_id": payment_id},
-            {"$set": {"status": "RELEASED", "released_at": now_utc(), "commission": commission, "payout": payout, "handyman_id": handyman_id}},
+            {"$set": {"status": "RELEASED", "released_at": now_utc(),
+                      "commission": commission, "payout": payout, "handyman_id": handyman_id,
+                      "stripe_status": stripe_status}},
         )
         await db.payouts.insert_one({
             "payout_id": new_id("po_"),
@@ -254,7 +352,7 @@ class PaymentService:
             "job_id": pay["job_id"],
             "status": "COMPLETED",
             "created_at": now_utc(),
-            "mocked": True,
+            "provider": pay.get("provider", "MOCK"),
         })
         await db.commissions.insert_one({
             "commission_id": new_id("cm_"),
@@ -302,6 +400,85 @@ class MapProvider:
         lat = 30 + (h % 20000) / 1000.0  # 30-50
         lng = -120 + ((h // 20000) % 45000) / 1000.0  # -120 to -75
         return {"lat": round(lat, 4), "lng": round(lng, 4), "city": "Unknown", "state": "US"}
+
+
+class ObjectStorage:
+    """Emergent Managed Object Storage. init once, reuse storage_key."""
+    _storage_key: Optional[str] = None
+
+    @classmethod
+    def _base_url(cls) -> str:
+        return CONFIG["INTEGRATION_PROXY_URL"].rstrip("/") + "/objstore/api/v1/storage"
+
+    @classmethod
+    def init(cls) -> Optional[str]:
+        if cls._storage_key:
+            return cls._storage_key
+        if not CONFIG["EMERGENT_LLM_KEY"]:
+            return None
+        try:
+            r = pyrequests.post(f"{cls._base_url()}/init",
+                                json={"emergent_key": CONFIG["EMERGENT_LLM_KEY"]}, timeout=15)
+            if r.status_code == 200:
+                cls._storage_key = r.json().get("storage_key")
+                return cls._storage_key
+            logger.warning("ObjectStorage init failed %s: %s", r.status_code, r.text[:200])
+        except Exception as e:
+            logger.warning("ObjectStorage init exception: %s", e)
+        return None
+
+    @classmethod
+    def put(cls, path: str, data: bytes, content_type: str) -> Optional[dict]:
+        key = cls.init()
+        if not key:
+            return None
+        try:
+            r = pyrequests.put(f"{cls._base_url()}/objects/{path}",
+                               headers={"X-Storage-Key": key, "Content-Type": content_type},
+                               data=data, timeout=60)
+            if r.status_code == 503:
+                cls._storage_key = None
+                key = cls.init()
+                if not key:
+                    return None
+                r = pyrequests.put(f"{cls._base_url()}/objects/{path}",
+                                   headers={"X-Storage-Key": key, "Content-Type": content_type},
+                                   data=data, timeout=60)
+            if r.status_code == 200:
+                return r.json()
+            logger.warning("ObjectStorage put failed %s: %s", r.status_code, r.text[:200])
+        except Exception as e:
+            logger.warning("ObjectStorage put exception: %s", e)
+        return None
+
+    @classmethod
+    def get(cls, path: str) -> Optional[tuple]:
+        key = cls.init()
+        if not key:
+            return None
+        try:
+            r = pyrequests.get(f"{cls._base_url()}/objects/{path}",
+                               headers={"X-Storage-Key": key}, timeout=30)
+            if r.status_code == 503:
+                cls._storage_key = None
+                key = cls.init()
+                if not key:
+                    return None
+                r = pyrequests.get(f"{cls._base_url()}/objects/{path}",
+                                   headers={"X-Storage-Key": key}, timeout=30)
+            if r.status_code == 200:
+                return r.content, r.headers.get("Content-Type", "application/octet-stream")
+        except Exception as e:
+            logger.warning("ObjectStorage get exception: %s", e)
+        return None
+
+
+def _strip_commission_for(viewer_role: str, doc: dict) -> dict:
+    """Remove commission-related fields from payment/payout docs unless admin."""
+    if viewer_role == "admin":
+        return doc
+    hidden = {"commission", "commission_cents_planned", "application_fee_amount"}
+    return {k: v for k, v in doc.items() if k not in hidden}
 
 
 # ------------------------------------------------------------------
@@ -454,6 +631,11 @@ async def startup():
             "suspended": False,
         })
     logger.info("SPIKE backend ready.")
+    # Init object storage (idempotent, best-effort)
+    try:
+        await run_in_threadpool(ObjectStorage.init)
+    except Exception as e:
+        logger.warning("ObjectStorage init at startup failed: %s", e)
 
 
 # ------------------------------------------------------------------
@@ -993,8 +1175,13 @@ async def upload_photos(job_id: str, body: Dict[str, Any], user: dict = Depends(
         await db.jobs.update_one({"job_id": job_id}, {"$push": {"photos_before": {"$each": [{"data": p, "at": now_utc().isoformat(), "by": user["user_id"]} for p in photos]}}})
     elif kind == "after":
         await db.jobs.update_one({"job_id": job_id}, {"$push": {"photos_after": {"$each": [{"data": p, "at": now_utc().isoformat(), "by": user["user_id"]} for p in photos]}}})
+    elif kind == "post":
+        # Customer job post photos
+        if j.get("customer_id") != user["user_id"]:
+            raise HTTPException(403, "only customer can add post photos")
+        await db.jobs.update_one({"job_id": job_id}, {"$push": {"photos": {"$each": photos}}})
     else:
-        raise HTTPException(400, "kind must be before/after")
+        raise HTTPException(400, "kind must be before/after/post")
     return {"ok": True}
 
 
@@ -1136,24 +1323,75 @@ def _detect_off_platform(text: str) -> bool:
     return any(k in lower for k in keywords)
 
 
+def _detect_contact_info(text: str) -> bool:
+    """Detect phone numbers, emails, or street addresses being shared in chat."""
+    import re
+    # Email
+    if re.search(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", text):
+        return True
+    # Phone (loose): 7+ digits with optional separators, +, () — catches 555-123-4567, +1 555 1234567, 5551234567
+    digits = re.sub(r"\D", "", text)
+    if len(digits) >= 10:
+        return True
+    if re.search(r"(?:\+?\d[\d\-\.\s\(\)]{8,}\d)", text):
+        return True
+    # Street address hint: number followed by street word
+    if re.search(r"\b\d{1,5}\s+\w+\s+(street|st|avenue|ave|road|rd|blvd|drive|dr|lane|ln|way|court|ct)\b", text, re.I):
+        return True
+    return False
+
+
+def _can_chat(job: dict, user_id: str) -> tuple[bool, str]:
+    """Return (allowed, reason). Chat only after CLAIMED, only between customer and
+    the claiming handyman, and only when address is released (last 24h window).
+    Emergency jobs release address immediately so chat opens on CLAIM.
+    """
+    if not job:
+        return False, "not found"
+    if user_id not in {job.get("customer_id"), job.get("handyman_id")}:
+        return False, "forbidden"
+    if job.get("status") in {"POSTED", "MATCHING_30MI", "MATCHING_60MI", "DRAFT"}:
+        return False, "chat opens after a handyman claims the job"
+    release_at = ensure_aware(job.get("address_release_at"))
+    if release_at is None:
+        return False, "chat unavailable"
+    if now_utc() < release_at:
+        hrs = int((release_at - now_utc()).total_seconds() / 3600)
+        return False, f"chat opens 24h before work time ({hrs}h remaining)"
+    return True, "ok"
+
+
 @api_router.post("/jobs/{job_id}/messages")
 async def send_message(job_id: str, body: MessageIn, user: dict = Depends(get_current_user)):
     j = await db.jobs.find_one({"job_id": job_id})
     if not j:
         raise HTTPException(404, "not found")
-    if user["user_id"] not in {j.get("customer_id"), j.get("handyman_id")}:
-        raise HTTPException(403, "forbidden")
-    flagged = _detect_off_platform(body.body)
+    allowed, reason = _can_chat(j, user["user_id"])
+    if not allowed:
+        code = 403 if reason == "forbidden" else 400
+        raise HTTPException(code, reason)
+    flagged_off = _detect_off_platform(body.body)
+    flagged_contact = _detect_contact_info(body.body)
+    if flagged_contact:
+        # Reject outright — contact info sharing violates platform policy.
+        await db.user_flags.insert_one({
+            "flag_id": new_id("f_"),
+            "user_id": user["user_id"],
+            "type": "contact_info_attempt",
+            "job_id": job_id,
+            "created_at": now_utc(),
+        })
+        raise HTTPException(400, "Sharing phone numbers, emails, or addresses is not allowed. Keep it in-app.")
     msg = {
         "message_id": new_id("m_"),
         "job_id": job_id,
         "sender_id": user["user_id"],
         "body": body.body,
-        "flagged_off_platform": flagged,
+        "flagged_off_platform": flagged_off,
         "created_at": now_utc(),
     }
     await db.messages.insert_one(msg.copy())
-    if flagged:
+    if flagged_off:
         await db.user_flags.insert_one({
             "flag_id": new_id("f_"),
             "user_id": user["user_id"],
@@ -1162,11 +1400,10 @@ async def send_message(job_id: str, body: MessageIn, user: dict = Depends(get_cu
             "message_id": msg["message_id"],
             "created_at": now_utc(),
         })
-    # Notify counterpart
     other = j["handyman_id"] if user["user_id"] == j["customer_id"] else j["customer_id"]
     if other:
         await PushNotificationService.send(other, "CUSTOMER_MESSAGE", "New message", body.body[:60], {"job_id": job_id})
-    return {"message": clean_doc(msg), "flagged_off_platform": flagged}
+    return {"message": clean_doc(msg), "flagged_off_platform": flagged_off}
 
 
 @api_router.get("/jobs/{job_id}/messages")
@@ -1174,10 +1411,25 @@ async def list_messages(job_id: str, user: dict = Depends(get_current_user)):
     j = await db.jobs.find_one({"job_id": job_id})
     if not j:
         raise HTTPException(404, "not found")
-    if user["user_id"] not in {j.get("customer_id"), j.get("handyman_id")} and user.get("role") != "admin":
-        raise HTTPException(403, "forbidden")
+    if user.get("role") == "admin":
+        pass
+    else:
+        allowed, reason = _can_chat(j, user["user_id"])
+        if not allowed:
+            code = 403 if reason == "forbidden" else 400
+            raise HTTPException(code, reason)
     cur = db.messages.find({"job_id": job_id}, {"_id": 0}).sort("created_at", 1)
     return {"messages": [clean_doc(m) async for m in cur]}
+
+
+@api_router.get("/jobs/{job_id}/chat-status")
+async def chat_status(job_id: str, user: dict = Depends(get_current_user)):
+    j = await db.jobs.find_one({"job_id": job_id})
+    if not j:
+        raise HTTPException(404, "not found")
+    allowed, reason = _can_chat(j, user["user_id"])
+    return {"allowed": allowed, "reason": reason,
+            "address_release_at": ensure_aware(j.get("address_release_at")).isoformat() if j.get("address_release_at") else None}
 
 
 # ------------------------------------------------------------------
@@ -1284,11 +1536,17 @@ async def my_payments(user: dict = Depends(get_current_user)):
         cur = db.payments.find({"customer_id": user["user_id"]}, {"_id": 0}).sort("created_at", -1)
     else:
         cur = db.payouts.find({"handyman_id": user["user_id"]}, {"_id": 0}).sort("created_at", -1)
-    return {"items": [clean_doc(p) async for p in cur]}
+    items = []
+    async for p in cur:
+        items.append(_strip_commission_for(user.get("role", ""), clean_doc(p)))
+    return {"items": items}
 
 
 @api_router.get("/earnings/summary")
 async def earnings_summary(user: dict = Depends(require_role("handyman"))):
+    """Handyman-facing earnings show ONLY net payout (after platform cut).
+    Commission is never exposed to the handyman.
+    """
     cur = db.payouts.find({"handyman_id": user["user_id"]}, {"_id": 0})
     total = 0.0
     count = 0
@@ -1362,6 +1620,93 @@ async def report_safety(body: Dict[str, Any], user: dict = Depends(get_current_u
     }
     await db.safety_reports.insert_one(doc.copy())
     return {"ok": True, "report_id": doc["report_id"]}
+
+
+# ------------------------------------------------------------------
+# Uploads (Emergent Managed Object Storage)
+# ------------------------------------------------------------------
+@api_router.post("/upload")
+async def upload_file(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+    ext = (file.filename or "bin").rsplit(".", 1)[-1].lower() if "." in (file.filename or "") else "bin"
+    if ext not in {"jpg", "jpeg", "png", "webp", "heic", "heif"}:
+        ext = "jpg"
+    path = f"{CONFIG['APP_NAME']}/uploads/{user['user_id']}/{uuid.uuid4().hex}.{ext}"
+    data = await file.read()
+    result = await run_in_threadpool(lambda: ObjectStorage.put(path, data, file.content_type or "image/jpeg"))
+    if not result:
+        # Fallback: store base64 in Mongo when object storage unavailable
+        b64 = base64.b64encode(data).decode()
+        doc = {
+            "upload_id": new_id("up_"),
+            "user_id": user["user_id"],
+            "path": path,
+            "storage": "inline",
+            "content_type": file.content_type or "image/jpeg",
+            "data_b64": b64,
+            "size": len(data),
+            "created_at": now_utc(),
+        }
+        await db.uploads.insert_one(doc.copy())
+        return {"path": path, "size": len(data), "url": f"/api/files/{path}", "storage": "inline"}
+    doc = {
+        "upload_id": new_id("up_"),
+        "user_id": user["user_id"],
+        "path": result["path"],
+        "storage": "emergent",
+        "content_type": file.content_type or "image/jpeg",
+        "size": result.get("size", len(data)),
+        "etag": result.get("etag"),
+        "created_at": now_utc(),
+    }
+    await db.uploads.insert_one(doc.copy())
+    return {"path": result["path"], "size": doc["size"], "url": f"/api/files/{result['path']}", "storage": "emergent"}
+
+
+@api_router.get("/files/{path:path}")
+async def get_file(path: str, token: Optional[str] = None, authorization: Optional[str] = Header(None)):
+    # Auth: either bearer header or token query param (for <img> on web)
+    if not authorization and token:
+        authorization = f"Bearer {token}"
+    if not authorization:
+        raise HTTPException(401, "auth required")
+    try:
+        await get_current_user(authorization)
+    except HTTPException:
+        raise
+    doc = await db.uploads.find_one({"path": path}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "not found")
+    if doc.get("storage") == "inline":
+        return JSONResponse(status_code=200, content=None,
+                            headers={"Content-Type": doc.get("content_type", "image/jpeg")})
+    result = await run_in_threadpool(lambda: ObjectStorage.get(path))
+    if not result:
+        raise HTTPException(404, "not found")
+    content, ct = result
+    from fastapi.responses import Response as FResp
+    return FResp(content=content, media_type=ct)
+
+
+# ------------------------------------------------------------------
+# Stripe Connect - handyman onboarding
+# ------------------------------------------------------------------
+@api_router.post("/stripe/onboard")
+async def stripe_onboard(body: Dict[str, Any], user: dict = Depends(require_role("handyman"))):
+    return_url = body.get("return_url") or "https://spike.app/onboarded"
+    r = await PaymentService.onboard_link(user["user_id"], return_url)
+    return r
+
+
+@api_router.get("/stripe/status")
+async def stripe_status(user: dict = Depends(require_role("handyman"))):
+    u = await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0})
+    return {
+        "connected": bool(u.get("stripe_account_id")),
+        "charges_enabled": bool(u.get("stripe_charges_enabled")),
+        "payouts_enabled": bool(u.get("stripe_payouts_enabled")),
+        "details_submitted": bool(u.get("stripe_details_submitted")),
+        "mocked": CONFIG["PAYMENT_PROVIDER"] != "STRIPE_CONNECT",
+    }
 
 
 # ------------------------------------------------------------------

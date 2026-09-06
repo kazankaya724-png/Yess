@@ -92,8 +92,9 @@ function JobRow({ job, onPress }: any) {
       <View style={{ flex: 1 }}>
         <Text style={styles.jobTitle} numberOfLines={1}>{job.title}</Text>
         <Text style={styles.jobMeta}>${Number(job.price).toFixed(0)} · {job.date} · {job.start_time}</Text>
-        <View style={{ marginTop: 8 }}>
+        <View style={{ marginTop: 8, flexDirection: "row", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
           <Badge label={job.status.replace(/_/g, " ")} tone="brand" />
+          {job.urgency === "emergency" && <Badge label="EMERGENCY" tone="warning" />}
         </View>
       </View>
     </Pressable>

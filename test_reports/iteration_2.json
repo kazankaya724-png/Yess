@@ -1,0 +1,54 @@
+{
+  "summary": "Iteration 2 testing complete. Backend: 33/33 pytest cases pass (16 new + 17 iter-1 regressions). Chat rules enforced: message blocked before claim (400 'chat opens after a handyman claims'), blocked after claim but before T-24h (400 '24h before work time'), unlocked immediately for emergency after claim. GET /api/jobs/{id}/chat-status returns {allowed,reason,address_release_at}. Contact-info filter rejects phone (555-123-4567, 5551234567), email (test@example.com), street address (123 Main Street) with 400. Allowed benign text goes through 200. Commission fully hidden: /payments/mine strips 'commission', 'commission_cents_planned', 'application_fee_amount' for both customers and handymen; /earnings/summary returns only NET total (no commission field); admin viewer keeps commission (verified via /admin/jobs). Full emergency lifecycle math verified: $200 job → handyman payout amount=180.00 (10% commission of $20 retained platform-side, hidden from users). /api/upload multipart returns {path,url,storage} with storage='inline' (Emergent proxy unreachable in this env — acceptable fallback). Job photos endpoint works for post/before/after; before-photo gate on /start enforced (tv_mounting). /stripe/onboard returns {url,...}; /stripe/status returns {connected,charges_enabled,payouts_enabled,details_submitted}. Non-owner non-handyman handyman gets 403 on completed job; owner still 200. Login accepts any captcha_token ≥6 chars including 'hold_1200_abc_xyz'. Frontend (390x844 mobile viewport): login screen shows 'Press & hold to verify' (no math). Holding ~1.2s transitions to green 'Human verified' pill; Sign in becomes enabled and routes customer to /home. Customer bottom tab bar shows 5 icons (Home / Jobs / Messages / Payments / Profile). Job detail page shows single big color-coded 'Current status' card ('Awaiting a pro' seen) — full step list absent. Send-message icon correctly hidden on POSTED job (chat locked). Handyman bottom tabs: Find Jobs (radar) / My Jobs (wrench) / Messages / Earnings / Profile. Find Jobs default view is the animated radar with concentric rings (15/30/60), 'You'/'Emergency' legend, pins with prices, and a radar↔list toggle. Handyman Profile shows animated ID VERIFIED / TRUSTED PRO / TOP RATED badges. Payouts card shows 'Payouts active — Powered by Stripe' (mike is already onboarded via mock; the pre-onboard 'Connect payouts' button path was not exercised because mike is seeded connected). One console error surfaced from radar-view (negative <circle> r on animation tick) — visual glitch only, does not affect functionality.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "RadarView", "issue": "SVG <circle> receives negative r values on some animation frames ('Error: <circle> attribute r: A negative value is not valid'). Console errors on every sweep cycle. Reference: /app/frontend/src/radar-view.tsx:31-34 — sweepProps r=sweep.value*(size/2-6) can go slightly negative due to reanimated interpolation on web. Fix: clamp with Math.max(0, ...).", "testID": "n/a", "priority": "LOW"},
+      {"component": "RadarView", "issue": "Missing testID='radar-view' on the outer wrapper and testIDs 'toggle-radar'/'toggle-list' on the top-right radar↔list toggle buttons — reduces testability.", "testID": "radar-view / toggle-radar / toggle-list", "priority": "LOW"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "customer job detail (owner view)", "issues": ["ZIP row is masked as '921**' even for the owner while the full address ('123 Test St, San Diego, CA 92105') is shown right below. Consider showing the full ZIP to owners for consistency."]}
+    ],
+    "react_native_issues": [
+      {"component": "global", "issue": "Console warning: 'shadow*' style props are deprecated. Use 'boxShadow'. Widespread across screens. Reference: multiple components under /app/frontend/app/ and /app/frontend/src/ using StyleSheet with shadowColor/shadowOpacity/shadowRadius. Migrate to RN 0.76+ boxShadow."},
+      {"component": "pointerEvents", "issue": "Console warning: 'props.pointerEvents is deprecated. Use style.pointerEvents' — appeared on profile screen. Grep components using pointerEvents prop and move to style."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration2.py",
+    "/app/backend/tests/test_spike_backend.py",
+    "/app/backend/tests/conftest.py",
+    "/app/test_reports/pytest/pytest_results.xml",
+    "/app/test_reports/pytest/pytest_iter2.xml"
+  ],
+  "action_items": [
+    "Clamp sweep r in /app/frontend/src/radar-view.tsx:31-34 with Math.max(0, ...) to eliminate SVG negative-radius console errors.",
+    "Add testID='radar-view' on RadarView root and testIDs on the radar/list toggle buttons in /app/frontend/app/(handyman)/available.tsx to unblock automated testing.",
+    "Migrate deprecated 'shadow*' style props to 'boxShadow' (RN 0.76+). Widespread deprecation warning across the app.",
+    "Move deprecated 'pointerEvents' prop into style.pointerEvents (Profile screen at minimum).",
+    "(Minor UX) Owner's job detail masks ZIP as '921**' while showing full street address in the row below — show full ZIP to owner.",
+    "(Optional) Add testID='job-chat-icon' on the top-bar send-message icon in /app/frontend/app/job/[id].tsx (when chat is unlocked) for automated verification."
+  ],
+  "critical_code_review_comments": [
+    "server.py has grown to 1727 lines — still monolithic. Consider modular split (auth, jobs, chat, payments, stripe, uploads, admin) before iteration 3.",
+    "Chat filter _detect_contact_info uses 'if len(digits)>=10' — will falsely match any message containing 10+ total digits (e.g. 'I have 10 chairs and 20 tables and 100 hooks and 50 nails' = 6 digits so ok, but 'order 1234567890 items' = 10 digits will block). Acceptable trade-off but consider requiring digit clustering.",
+    "_can_chat correctly enforces: not-yet-claimed → 'chat opens after a handyman claims the job'; before release_at → 'chat opens 24h before work time'; emergency jobs release address immediately so chat opens on claim.",
+    "PaymentService applies 10% commission consistently; _strip_commission_for(role) hides commission/commission_cents_planned/application_fee_amount for non-admin. /earnings/summary returns only NET (no commission key) — verified.",
+    "GET /jobs/{id} correctly returns 403 for unrelated handymen once job leaves POSTED/MATCHING_* states, protecting completed-job privacy.",
+    "Upload endpoint gracefully falls back to inline mongo storage when Emergent proxy is unreachable (observed in this env). /api/files/{path} requires auth via bearer header or ?token= query."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration2.py (new — 16 iter-2 test cases)",
+    "/app/backend/tests/test_spike_backend.py (updated TestMessages to reflect new chat-locking rules)"
+  ],
+  "success_rate": {"backend": "100% (33/33)", "frontend": "100% of exercised flows (login/hold-captcha, customer home, customer job detail w/ single-status card, handyman radar Find Jobs, handyman profile w/ animated badges, tab bars)"},
+  "seed_data_creation": "Iteration-2 tests create TEST_-prefixed jobs (tv_mounting emergency + standard, several via _create_job helper). Uploaded 1x1 PNG stored inline in db.uploads. Owner assets are all TEST_-prefixed and safely identifiable.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Chat rules (iteration 2): (1) POST /api/jobs/{id}/messages returns 400 with 'chat opens after a handyman claims the job' while status ∈ {POSTED,MATCHING_*,DRAFT}; (2) after claim but before address_release_at → 400 'chat opens 24h before work time'; (3) emergency urgency releases address immediately so chat opens on claim; (4) contact info (phone ≥10 digits, email regex, street-suffix words) → 400. Commission is hidden for customer & handyman via _strip_commission_for; /earnings/summary returns {total,count} only. Backend URL: EXPO_PUBLIC_BACKEND_URL. Frontend: use hold-to-verify — mouse down on [data-testid='login-verify'] for 1.5s+ before submit. Radar-view console errors are cosmetic; functionality works.",
+  "rca_of_issue": "RadarView negative-radius warning: reanimated's sweep.value is interpolated on web and can produce a tiny negative float on the wrap-around frame (repeat=-1). SVG rejects negative r. Reproduction: open handyman /available in web and observe DevTools console every 3.5s. Mitigation: clamp with Math.max(0, sweep.value*(size/2-6)) inside useAnimatedProps."
+}

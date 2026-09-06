@@ -47,8 +47,9 @@ export async function api<T = any>(
   path: string,
   opts: RequestInit & { auth?: boolean } = {}
 ): Promise<T> {
+  const isForm = typeof FormData !== "undefined" && opts.body instanceof FormData;
   const headers: Record<string, string> = {
-    "Content-Type": "application/json",
+    ...(isForm ? {} : { "Content-Type": "application/json" }),
     ...((opts.headers as Record<string, string>) || {}),
   };
   const token = inMemoryToken ?? (await getToken());
